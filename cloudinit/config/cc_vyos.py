@@ -44,6 +44,7 @@ def set_pass_login(config, user, password, encrypted_pass):
     else:
         config.set(['system', 'login', 'user', user, 'authentication', 'plaintext-password'], value=password, replace=True)
 
+    config.set_tag(['system', 'login', 'user'])
     config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)
 
 
