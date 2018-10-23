@@ -2,8 +2,10 @@
 #
 # This file is part of cloud-init. See LICENSE file for license information.
 
+import os
 import datetime
 import json
+from subprocess import call
 
 from base64 import b64decode
 
@@ -18,6 +20,7 @@ LOG = logging.getLogger(__name__)
 MD_V1_URL = 'http://metadata.google.internal/computeMetadata/v1/'
 BUILTIN_DS_CONFIG = {'metadata_url': MD_V1_URL}
 REQUIRED_FIELDS = ('instance-id', 'availability-zone', 'local-hostname')
+DEFAULT_PRIMARY_NIC = 'eth0'
 
 
 class GoogleMetadataFetcher(object):
@@ -50,6 +53,11 @@ class GoogleMetadataFetcher(object):
 class DataSourceGCE(sources.DataSource):
 
     dsname = 'GCE'
+    process_name = 'dhclient'
+
+    tmpps = os.popen("ps -Af").read()
+    if process_name not in tmpps[:]:
+        call(['/sbin/dhclient', DEFAULT_PRIMARY_NIC])
 
     def __init__(self, sys_cfg, distro, paths):
         sources.DataSource.__init__(self, sys_cfg, distro, paths)

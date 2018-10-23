@@ -20,7 +20,6 @@
 
 import os
 import sys
-import base64
 import ast
 
 from cloudinit import util
@@ -58,11 +57,9 @@ def set_ssh_login(config, user, key_string, key_x):
     for key in key_parts:
         if 'ssh-dss' in key or 'ssh-rsa' in key:
             key_type = key
-        try:
-            if base64.b64decode(key):
-                key_data = key
-        except:
-            pass
+
+        if key.startswith('AAAAB3NzaC1yc2E') or key.startswith('AAAAB3NzaC1kc3M'):
+           key_data = key
 
     if not key_type:
         util.logexc(log, 'Key type not defined, wrong ssh key format.')
