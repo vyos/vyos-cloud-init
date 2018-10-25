@@ -10,6 +10,7 @@
 
 import os
 import time
+from subprocess import call
 
 from cloudinit import ec2_utils as ec2
 from cloudinit import log as logging
@@ -26,6 +27,7 @@ SKIP_METADATA_URL_CODES = frozenset([uhelp.NOT_FOUND])
 
 STRICT_ID_PATH = ("datasource", "Ec2", "strict_id")
 STRICT_ID_DEFAULT = "warn"
+DEFAULT_PRIMARY_NIC = 'eth0'
 
 _unset = "_unset"
 
@@ -47,6 +49,12 @@ class Platforms(object):
 class DataSourceEc2(sources.DataSource):
 
     dsname = 'Ec2'
+    process_name = 'dhclient'
+
+    tmpps = os.popen("ps -Af").read()
+    if process_name not in tmpps[:]:
+        call(['/sbin/dhclient', DEFAULT_PRIMARY_NIC])
+
     # Default metadata urls that will be used if none are provided
     # They will be checked for 'resolveability' and some of the
     # following may be discarded if they do not resolve
