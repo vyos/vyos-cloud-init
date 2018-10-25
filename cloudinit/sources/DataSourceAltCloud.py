@@ -29,7 +29,6 @@ CLOUD_INFO_FILE = '/etc/sysconfig/cloud-info'
 
 # Shell command lists
 CMD_PROBE_FLOPPY = ['modprobe', 'floppy']
-CMD_UDEVADM_SETTLE = ['udevadm', 'settle', '--timeout=5']
 
 META_DATA_NOT_SUPPORTED = {
     'block-device-mapping': {},
@@ -182,29 +181,18 @@ class DataSourceAltCloud(sources.DataSource):
 
         # modprobe floppy
         try:
-            cmd = CMD_PROBE_FLOPPY
-            (cmd_out, _err) = util.subp(cmd)
-            LOG.debug('Command: %s\nOutput%s', ' '.join(cmd), cmd_out)
-        except ProcessExecutionError as _err:
-            util.logexc(LOG, 'Failed command: %s\n%s', ' '.join(cmd), _err)
-            return False
-        except OSError as _err:
-            util.logexc(LOG, 'Failed command: %s\n%s', ' '.join(cmd), _err)
+            modprobe_floppy()
+        except ProcessExecutionError as e:
+            util.logexc(LOG, 'Failed modprobe: %s', e)
             return False
 
         floppy_dev = '/dev/fd0'
 
         # udevadm settle for floppy device
         try:
-            cmd = CMD_UDEVADM_SETTLE
-            cmd.append('--exit-if-exists=' + floppy_dev)
-            (cmd_out, _err) = util.subp(cmd)
-            LOG.debug('Command: %s\nOutput%s', ' '.join(cmd), cmd_out)
-        except ProcessExecutionError as _err:
-            util.logexc(LOG, 'Failed command: %s\n%s', ' '.join(cmd), _err)
-            return False
-        except OSError as _err:
-            util.logexc(LOG, 'Failed command: %s\n%s', ' '.join(cmd), _err)
+            util.udevadm_settle(exists=floppy_dev, timeout=5)
+        except (ProcessExecutionError, OSError) as e:
+            util.logexc(LOG, 'Failed udevadm_settle: %s\n', e)
             return False
 
         try:
@@ -259,6 +247,11 @@ class DataSourceAltCloud(sources.DataSource):
             return True
         else:
             return False
+
+
+def modprobe_floppy():
+    out, _err = util.subp(CMD_PROBE_FLOPPY)
+    LOG.debug('Command: %s\nOutput%s', ' '.join(CMD_PROBE_FLOPPY), out)
 
 
 # Used to match classes to dependencies

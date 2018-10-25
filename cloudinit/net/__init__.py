@@ -107,6 +107,21 @@ def is_bond(devname):
     return os.path.exists(sys_dev_path(devname, "bonding"))
 
 
+def is_renamed(devname):
+    """
+    /* interface name assignment types (sysfs name_assign_type attribute) */
+    #define NET_NAME_UNKNOWN	0	/* unknown origin (not exposed to user) */
+    #define NET_NAME_ENUM		1	/* enumerated by kernel */
+    #define NET_NAME_PREDICTABLE	2	/* predictably named by the kernel */
+    #define NET_NAME_USER		3	/* provided by user-space */
+    #define NET_NAME_RENAMED	4	/* renamed by user-space */
+    """
+    name_assign_type = read_sys_net_safe(devname, 'name_assign_type')
+    if name_assign_type and name_assign_type in ['3', '4']:
+        return True
+    return False
+
+
 def is_vlan(devname):
     uevent = str(read_sys_net_safe(devname, "uevent"))
     return 'DEVTYPE=vlan' in uevent.splitlines()
@@ -179,6 +194,17 @@ def find_fallback_nic(blacklist_drivers=None):
     """Return the name of the 'fallback' network device."""
     if not blacklist_drivers:
         blacklist_drivers = []
+
+    if 'net.ifnames=0' in util.get_cmdline():
+        LOG.debug('Stable ifnames disabled by net.ifnames=0 in /proc/cmdline')
+    else:
+        unstable = [device for device in get_devicelist()
+                    if device != 'lo' and not is_renamed(device)]
+        if len(unstable):
+            LOG.debug('Found unstable nic names: %s; calling udevadm settle',
+                      unstable)
+            msg = 'Waiting for udev events to settle'
+            util.log_time(LOG.debug, msg, func=util.udevadm_settle)
 
     # get list of interfaces that could have connections
     invalid_interfaces = set(['lo'])
@@ -295,7 +321,7 @@ def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
 
     def _version_2(netcfg):
         renames = []
-        for key, ent in netcfg.get('ethernets', {}).items():
+        for ent in netcfg.get('ethernets', {}).values():
             # only rename if configured to do so
             name = ent.get('set-name')
             if not name:
@@ -333,8 +359,12 @@ def interface_has_own_mac(ifname, strict=False):
       1: randomly generated   3: set using dev_set_mac_address"""
 
     assign_type = read_sys_net_int(ifname, "addr_assign_type")
-    if strict and assign_type is None:
-        raise ValueError("%s had no addr_assign_type.")
+    if assign_type is None:
+        # None is returned if this nic had no 'addr_assign_type' entry.
+        # if strict, raise an error, if not return True.
+        if strict:
+            raise ValueError("%s had no addr_assign_type.")
+        return True
     return assign_type in (0, 1, 3)
 
 
@@ -539,6 +569,20 @@ def get_interface_mac(ifname):
     return read_sys_net_safe(ifname, path)
 
 
+def get_ib_interface_hwaddr(ifname, ethernet_format):
+    """Returns the string value of an Infiniband interface's hardware
+    address. If ethernet_format is True, an Ethernet MAC-style 6 byte
+    representation of the address will be returned.
+    """
+    # Type 32 is Infiniband.
+    if read_sys_net_safe(ifname, 'type') == '32':
+        mac = get_interface_mac(ifname)
+        if mac and ethernet_format:
+            # Use bytes 13-15 and 18-20 of the hardware address.
+            mac = mac[36:-14] + mac[51:]
+        return mac
+
+
 def get_interfaces_by_mac():
     """Build a dictionary of tuples {mac: name}.
 
@@ -550,6 +594,15 @@ def get_interfaces_by_mac():
                 "duplicate mac found! both '%s' and '%s' have mac '%s'" %
                 (name, ret[mac], mac))
         ret[mac] = name
+        # Try to get an Infiniband hardware address (in 6 byte Ethernet format)
+        # for the interface.
+        ib_mac = get_ib_interface_hwaddr(name, True)
+        if ib_mac:
+            if ib_mac in ret:
+                raise RuntimeError(
+                    "duplicate mac found! both '%s' and '%s' have mac '%s'" %
+                    (name, ret[ib_mac], ib_mac))
+            ret[ib_mac] = name
     return ret
 
 
@@ -574,6 +627,21 @@ def get_interfaces():
         if mac == empty_mac and name != 'lo':
             continue
         ret.append((name, mac, device_driver(name), device_devid(name)))
+    return ret
+
+
+def get_ib_hwaddrs_by_interface():
+    """Build a dictionary mapping Infiniband interface names to their hardware
+    address."""
+    ret = {}
+    for name, _, _, _ in get_interfaces():
+        ib_mac = get_ib_interface_hwaddr(name, False)
+        if ib_mac:
+            if ib_mac in ret:
+                raise RuntimeError(
+                    "duplicate mac found! both '%s' and '%s' have mac '%s'" %
+                    (name, ret[ib_mac], ib_mac))
+            ret[name] = ib_mac
     return ret
 
 
@@ -667,6 +735,13 @@ class EphemeralIPv4Network(object):
                 'Skip ephemeral route setup. %s already has default route: %s',
                 self.interface, out.strip())
             return
+        util.subp(
+            ['ip', '-4', 'route', 'add', self.router, 'dev', self.interface,
+             'src', self.ip], capture=True)
+        self.cleanup_cmds.insert(
+            0,
+            ['ip', '-4', 'route', 'del', self.router, 'dev', self.interface,
+             'src', self.ip])
         util.subp(
             ['ip', '-4', 'route', 'add', 'default', 'via', self.router,
              'dev', self.interface], capture=True)

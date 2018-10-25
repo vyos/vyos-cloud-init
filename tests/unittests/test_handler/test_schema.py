@@ -4,7 +4,7 @@ from cloudinit.config.schema import (
     CLOUD_CONFIG_HEADER, SchemaValidationError, annotated_cloudconfig_file,
     get_schema_doc, get_schema, validate_cloudconfig_file,
     validate_cloudconfig_schema, main)
-from cloudinit.util import subp, write_file
+from cloudinit.util import write_file
 
 from cloudinit.tests.helpers import CiTestCase, mock, skipUnlessJsonSchema
 
@@ -134,22 +134,35 @@ class ValidateCloudConfigFileTest(CiTestCase):
         with self.assertRaises(SchemaValidationError) as context_mgr:
             validate_cloudconfig_file(self.config_file, {})
         self.assertEqual(
-            'Cloud config schema errors: header: File {0} needs to begin with '
-            '"{1}"'.format(self.config_file, CLOUD_CONFIG_HEADER.decode()),
+            'Cloud config schema errors: format-l1.c1: File {0} needs to begin'
+            ' with "{1}"'.format(
+                self.config_file, CLOUD_CONFIG_HEADER.decode()),
             str(context_mgr.exception))
 
-    def test_validateconfig_file_error_on_non_yaml_format(self):
-        """On non-yaml format, validate_cloudconfig_file errors."""
+    def test_validateconfig_file_error_on_non_yaml_scanner_error(self):
+        """On non-yaml scan issues, validate_cloudconfig_file errors."""
+        # Generate a scanner error by providing text on a single line with
+        # improper indent.
+        write_file(self.config_file, '#cloud-config\nasdf:\nasdf')
+        with self.assertRaises(SchemaValidationError) as context_mgr:
+            validate_cloudconfig_file(self.config_file, {})
+        self.assertIn(
+            'schema errors: format-l3.c1: File {0} is not valid yaml.'.format(
+                self.config_file),
+            str(context_mgr.exception))
+
+    def test_validateconfig_file_error_on_non_yaml_parser_error(self):
+        """On non-yaml parser issues, validate_cloudconfig_file errors."""
         write_file(self.config_file, '#cloud-config\n{}}')
         with self.assertRaises(SchemaValidationError) as context_mgr:
             validate_cloudconfig_file(self.config_file, {})
         self.assertIn(
-            'schema errors: format: File {0} is not valid yaml.'.format(
+            'schema errors: format-l2.c3: File {0} is not valid yaml.'.format(
                 self.config_file),
             str(context_mgr.exception))
 
     @skipUnlessJsonSchema()
-    def test_validateconfig_file_sctricty_validates_schema(self):
+    def test_validateconfig_file_sctrictly_validates_schema(self):
         """validate_cloudconfig_file raises errors on invalid schema."""
         schema = {
             'properties': {'p1': {'type': 'string', 'format': 'hostname'}}}
@@ -342,6 +355,20 @@ class MainTest(CiTestCase):
             'Expected either --config-file argument or --doc\n',
             m_stderr.getvalue())
 
+    def test_main_absent_config_file(self):
+        """Main exits non-zero when config file is absent."""
+        myargs = ['mycmd', '--annotate', '--config-file', 'NOT_A_FILE']
+        with mock.patch('sys.exit', side_effect=self.sys_exit):
+            with mock.patch('sys.argv', myargs):
+                with mock.patch('sys.stderr', new_callable=StringIO) as \
+                        m_stderr:
+                    with self.assertRaises(SystemExit) as context_manager:
+                        main()
+        self.assertEqual(1, context_manager.exception.code)
+        self.assertEqual(
+            'Configfile NOT_A_FILE does not exist\n',
+            m_stderr.getvalue())
+
     def test_main_prints_docs(self):
         """When --doc parameter is provided, main generates documentation."""
         myargs = ['mycmd', '--doc']
@@ -379,8 +406,14 @@ class CloudTestsIntegrationTest(CiTestCase):
         integration_testdir = os.path.sep.join(
             [testsdir, 'cloud_tests', 'testcases'])
         errors = []
-        out, _ = subp(['find', integration_testdir, '-name', '*yaml'])
-        for filename in out.splitlines():
+
+        yaml_files = []
+        for root, _dirnames, filenames in os.walk(integration_testdir):
+            yaml_files.extend([os.path.join(root, f)
+                               for f in filenames if f.endswith(".yaml")])
+        self.assertTrue(len(yaml_files) > 0)
+
+        for filename in yaml_files:
             test_cfg = safe_load(open(filename))
             cloud_config = test_cfg.get('cloud_config')
             if cloud_config:

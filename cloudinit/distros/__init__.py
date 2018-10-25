@@ -49,6 +49,9 @@ LOG = logging.getLogger(__name__)
 # It could break when Amazon adds new regions and new AZs.
 _EC2_AZ_RE = re.compile('^[a-z][a-z]-(?:[a-z]+-)+[0-9][a-z]$')
 
+# Default NTP Client Configurations
+PREFERRED_NTP_CLIENTS = ['chrony', 'systemd-timesyncd', 'ntp', 'ntpdate']
+
 
 @six.add_metaclass(abc.ABCMeta)
 class Distro(object):
@@ -60,6 +63,7 @@ class Distro(object):
     tz_zone_dir = "/usr/share/zoneinfo"
     init_cmd = ['service']  # systemctl, service etc
     renderer_configs = {}
+    _preferred_ntp_clients = None
 
     def __init__(self, name, cfg, paths):
         self._paths = paths
@@ -70,11 +74,10 @@ class Distro(object):
     def install_packages(self, pkglist):
         raise NotImplementedError()
 
-    @abc.abstractmethod
     def _write_network(self, settings):
-        # In the future use the http://fedorahosted.org/netcf/
-        # to write this blob out in a distro format
-        raise NotImplementedError()
+        raise RuntimeError(
+            "Legacy function '_write_network' was called in distro '%s'.\n"
+            "_write_network_config needs implementation.\n" % self.name)
 
     def _write_network_config(self, settings):
         raise NotImplementedError()
@@ -87,7 +90,7 @@ class Distro(object):
         LOG.debug("Selected renderer '%s' from priority list: %s",
                   name, priority)
         renderer = render_cls(config=self.renderer_configs.get(name))
-        renderer.render_network_config(network_config=network_config)
+        renderer.render_network_config(network_config)
         return []
 
     def _find_tz_file(self, tz):
@@ -140,7 +143,11 @@ class Distro(object):
         # this applies network where 'settings' is interfaces(5) style
         # it is obsolete compared to apply_network_config
         # Write it out
+
+        # pylint: disable=assignment-from-no-return
+        # We have implementations in arch, freebsd and gentoo still
         dev_names = self._write_network(settings)
+        # pylint: enable=assignment-from-no-return
         # Now try to bring them up
         if bring_up:
             return self._bring_up_interfaces(dev_names)
@@ -153,7 +160,7 @@ class Distro(object):
                     distro)
         header = '\n'.join([
             "# Converted from network_config for distro %s" % distro,
-            "# Implmentation of _write_network_config is needed."
+            "# Implementation of _write_network_config is needed."
         ])
         ns = network_state.parse_net_config_data(netconfig)
         contents = eni.network_state_to_eni(
@@ -339,6 +346,14 @@ class Distro(object):
             contents.write("%s\n" % (eh))
             util.write_file(self.hosts_fn, contents.getvalue(), mode=0o644)
 
+    @property
+    def preferred_ntp_clients(self):
+        """Allow distro to determine the preferred ntp client list"""
+        if not self._preferred_ntp_clients:
+            self._preferred_ntp_clients = list(PREFERRED_NTP_CLIENTS)
+
+        return self._preferred_ntp_clients
+
     def _bring_up_interface(self, device_name):
         cmd = ['ifup', device_name]
         LOG.debug("Attempting to run bring up interface %s using command %s",
@@ -369,6 +384,9 @@ class Distro(object):
         """
         Add a user to the system using standard GNU tools
         """
+        # XXX need to make add_user idempotent somehow as we
+        # still want to add groups or modify ssh keys on pre-existing
+        # users in the image.
         if util.is_user(name):
             LOG.info("User %s already exists, skipping.", name)
             return
@@ -519,7 +537,7 @@ class Distro(object):
             self.lock_passwd(name)
 
         # Configure sudo access
-        if 'sudo' in kwargs:
+        if 'sudo' in kwargs and kwargs['sudo'] is not False:
             self.write_sudo_rules(name, kwargs['sudo'])
 
         # Import SSH keys
@@ -535,10 +553,24 @@ class Distro(object):
                     LOG.warning("Invalid type '%s' detected for"
                                 " 'ssh_authorized_keys', expected list,"
                                 " string, dict, or set.", type(keys))
+                    keys = []
                 else:
                     keys = set(keys) or []
-                    ssh_util.setup_user_keys(keys, name, options=None)
-
+            ssh_util.setup_user_keys(set(keys), name)
+        if 'ssh_redirect_user' in kwargs:
+            cloud_keys = kwargs.get('cloud_public_ssh_keys', [])
+            if not cloud_keys:
+                LOG.warning(
+                    'Unable to disable ssh logins for %s given'
+                    ' ssh_redirect_user: %s. No cloud public-keys present.',
+                    name, kwargs['ssh_redirect_user'])
+            else:
+                redirect_user = kwargs['ssh_redirect_user']
+                disable_option = ssh_util.DISABLE_USER_OPTS
+                disable_option = disable_option.replace('$USER', redirect_user)
+                disable_option = disable_option.replace('$DISABLE_USER', name)
+                ssh_util.setup_user_keys(
+                    set(cloud_keys), name, options=disable_option)
         return True
 
     def lock_passwd(self, name):

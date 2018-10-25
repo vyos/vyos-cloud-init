@@ -9,6 +9,7 @@
 # This file is part of cloud-init. See LICENSE file for license information.
 
 import abc
+from collections import namedtuple
 import copy
 import json
 import os
@@ -17,6 +18,8 @@ import six
 from cloudinit.atomic_helper import write_json
 from cloudinit import importer
 from cloudinit import log as logging
+from cloudinit import net
+from cloudinit.event import EventType
 from cloudinit import type_utils
 from cloudinit import user_data as ud
 from cloudinit import util
@@ -35,11 +38,22 @@ DEP_FILESYSTEM = "FILESYSTEM"
 DEP_NETWORK = "NETWORK"
 DS_PREFIX = 'DataSource'
 
-# File in which instance meta-data, user-data and vendor-data is written
+EXPERIMENTAL_TEXT = (
+    "EXPERIMENTAL: The structure and format of content scoped under the 'ds'"
+    " key may change in subsequent releases of cloud-init.")
+
+
+# File in which public available instance meta-data is written
+# security-sensitive key values are redacted from this world-readable file
 INSTANCE_JSON_FILE = 'instance-data.json'
+# security-sensitive key values are present in this root-readable file
+INSTANCE_JSON_SENSITIVE_FILE = 'instance-data-sensitive.json'
+REDACT_SENSITIVE_VALUE = 'redacted for non-root user'
 
 # Key which can be provide a cloud's official product name to cloud-init
 METADATA_CLOUD_NAME_KEY = 'cloud-name'
+
+UNSET = "_unset"
 
 LOG = logging.getLogger(__name__)
 
@@ -48,24 +62,62 @@ class DataSourceNotFoundException(Exception):
     pass
 
 
-def process_base64_metadata(metadata, key_path=''):
-    """Strip ci-b64 prefix and return metadata with base64-encoded-keys set."""
+class InvalidMetaDataException(Exception):
+    """Raised when metadata is broken, unavailable or disabled."""
+    pass
+
+
+def process_instance_metadata(metadata, key_path='', sensitive_keys=()):
+    """Process all instance metadata cleaning it up for persisting as json.
+
+    Strip ci-b64 prefix and catalog any 'base64_encoded_keys' as a list
+
+    @return Dict copy of processed metadata.
+    """
     md_copy = copy.deepcopy(metadata)
-    md_copy['base64-encoded-keys'] = []
+    md_copy['base64_encoded_keys'] = []
+    md_copy['sensitive_keys'] = []
     for key, val in metadata.items():
         if key_path:
             sub_key_path = key_path + '/' + key
         else:
             sub_key_path = key
+        if key in sensitive_keys or sub_key_path in sensitive_keys:
+            md_copy['sensitive_keys'].append(sub_key_path)
         if isinstance(val, str) and val.startswith('ci-b64:'):
-            md_copy['base64-encoded-keys'].append(sub_key_path)
+            md_copy['base64_encoded_keys'].append(sub_key_path)
             md_copy[key] = val.replace('ci-b64:', '')
         if isinstance(val, dict):
-            return_val = process_base64_metadata(val, sub_key_path)
-            md_copy['base64-encoded-keys'].extend(
-                return_val.pop('base64-encoded-keys'))
+            return_val = process_instance_metadata(
+                val, sub_key_path, sensitive_keys)
+            md_copy['base64_encoded_keys'].extend(
+                return_val.pop('base64_encoded_keys'))
+            md_copy['sensitive_keys'].extend(
+                return_val.pop('sensitive_keys'))
             md_copy[key] = return_val
     return md_copy
+
+
+def redact_sensitive_keys(metadata, redact_value=REDACT_SENSITIVE_VALUE):
+    """Redact any sensitive keys from to provided metadata dictionary.
+
+    Replace any keys values listed in 'sensitive_keys' with redact_value.
+    """
+    if not metadata.get('sensitive_keys', []):
+        return metadata
+    md_copy = copy.deepcopy(metadata)
+    for key_path in metadata.get('sensitive_keys'):
+        path_parts = key_path.split('/')
+        obj = md_copy
+        for path in path_parts:
+            if isinstance(obj[path], dict) and path != path_parts[-1]:
+                obj = obj[path]
+        obj[path] = redact_value
+    return md_copy
+
+
+URLParams = namedtuple(
+    'URLParms', ['max_wait_seconds', 'timeout_seconds', 'num_retries'])
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -80,6 +132,37 @@ class DataSource(object):
 
     # Cached cloud_name as determined by _get_cloud_name
     _cloud_name = None
+
+    # Track the discovered fallback nic for use in configuration generation.
+    _fallback_interface = None
+
+    # read_url_params
+    url_max_wait = -1   # max_wait < 0 means do not wait
+    url_timeout = 10    # timeout for each metadata url read attempt
+    url_retries = 5     # number of times to retry url upon 404
+
+    # The datasource defines a set of supported EventTypes during which
+    # the datasource can react to changes in metadata and regenerate
+    # network configuration on metadata changes.
+    # A datasource which supports writing network config on each system boot
+    # would call update_events['network'].add(EventType.BOOT).
+
+    # Default: generate network config on new instance id (first boot).
+    update_events = {'network': set([EventType.BOOT_NEW_INSTANCE])}
+
+    # N-tuple listing default values for any metadata-related class
+    # attributes cached on an instance by a process_data runs. These attribute
+    # values are reset via clear_cached_attrs during any update_metadata call.
+    cached_attr_defaults = (
+        ('ec2_metadata', UNSET), ('network_json', UNSET),
+        ('metadata', {}), ('userdata', None), ('userdata_raw', None),
+        ('vendordata', None), ('vendordata_raw', None))
+
+    _dirty_cache = False
+
+    # N-tuple of keypaths or keynames redact from instance-data.json for
+    # non-root users
+    sensitive_metadata_keys = ('security-credentials',)
 
     def __init__(self, sys_cfg, distro, paths, ud_proc=None):
         self.sys_cfg = sys_cfg
@@ -106,48 +189,139 @@ class DataSource(object):
 
     def _get_standardized_metadata(self):
         """Return a dictionary of standardized metadata keys."""
-        return {'v1': {
-            'local-hostname': self.get_hostname(),
-            'instance-id': self.get_instance_id(),
-            'cloud-name': self.cloud_name,
-            'region': self.region,
-            'availability-zone': self.availability_zone}}
+        local_hostname = self.get_hostname()
+        instance_id = self.get_instance_id()
+        availability_zone = self.availability_zone
+        cloud_name = self.cloud_name
+        # When adding new standard keys prefer underscore-delimited instead
+        # of hyphen-delimted to support simple variable references in jinja
+        # templates.
+        return {
+            'v1': {
+                'availability-zone': availability_zone,
+                'availability_zone': availability_zone,
+                'cloud-name': cloud_name,
+                'cloud_name': cloud_name,
+                'instance-id': instance_id,
+                'instance_id': instance_id,
+                'local-hostname': local_hostname,
+                'local_hostname': local_hostname,
+                'region': self.region}}
+
+    def clear_cached_attrs(self, attr_defaults=()):
+        """Reset any cached metadata attributes to datasource defaults.
+
+        @param attr_defaults: Optional tuple of (attr, value) pairs to
+           set instead of cached_attr_defaults.
+        """
+        if not self._dirty_cache:
+            return
+        if attr_defaults:
+            attr_values = attr_defaults
+        else:
+            attr_values = self.cached_attr_defaults
+
+        for attribute, value in attr_values:
+            if hasattr(self, attribute):
+                setattr(self, attribute, value)
+        if not attr_defaults:
+            self._dirty_cache = False
 
     def get_data(self):
         """Datasources implement _get_data to setup metadata and userdata_raw.
 
         Minimally, the datasource should return a boolean True on success.
         """
+        self._dirty_cache = True
         return_value = self._get_data()
-        json_file = os.path.join(self.paths.run_dir, INSTANCE_JSON_FILE)
         if not return_value:
             return return_value
+        self.persist_instance_data()
+        return return_value
 
+    def persist_instance_data(self):
+        """Process and write INSTANCE_JSON_FILE with all instance metadata.
+
+        Replace any hyphens with underscores in key names for use in template
+        processing.
+
+        @return True on successful write, False otherwise.
+        """
         instance_data = {
-            'ds': {
-                'meta-data': self.metadata,
-                'user-data': self.get_userdata_raw(),
-                'vendor-data': self.get_vendordata_raw()}}
+            'ds': {'_doc': EXPERIMENTAL_TEXT,
+                   'meta_data': self.metadata}}
+        if hasattr(self, 'network_json'):
+            network_json = getattr(self, 'network_json')
+            if network_json != UNSET:
+                instance_data['ds']['network_json'] = network_json
+        if hasattr(self, 'ec2_metadata'):
+            ec2_metadata = getattr(self, 'ec2_metadata')
+            if ec2_metadata != UNSET:
+                instance_data['ds']['ec2_metadata'] = ec2_metadata
         instance_data.update(
             self._get_standardized_metadata())
         try:
             # Process content base64encoding unserializable values
             content = util.json_dumps(instance_data)
-            # Strip base64: prefix and return base64-encoded-keys
-            processed_data = process_base64_metadata(json.loads(content))
+            # Strip base64: prefix and set base64_encoded_keys list.
+            processed_data = process_instance_metadata(
+                json.loads(content),
+                sensitive_keys=self.sensitive_metadata_keys)
         except TypeError as e:
             LOG.warning('Error persisting instance-data.json: %s', str(e))
-            return return_value
+            return False
         except UnicodeDecodeError as e:
             LOG.warning('Error persisting instance-data.json: %s', str(e))
-            return return_value
-        write_json(json_file, processed_data, mode=0o600)
-        return return_value
+            return False
+        json_file = os.path.join(self.paths.run_dir, INSTANCE_JSON_FILE)
+        write_json(json_file, processed_data)  # World readable
+        json_sensitive_file = os.path.join(self.paths.run_dir,
+                                           INSTANCE_JSON_SENSITIVE_FILE)
+        write_json(json_sensitive_file,
+                   redact_sensitive_keys(processed_data), mode=0o600)
+        return True
 
     def _get_data(self):
+        """Walk metadata sources, process crawled data and save attributes."""
         raise NotImplementedError(
             'Subclasses of DataSource must implement _get_data which'
             ' sets self.metadata, vendordata_raw and userdata_raw.')
+
+    def get_url_params(self):
+        """Return the Datasource's prefered url_read parameters.
+
+        Subclasses may override url_max_wait, url_timeout, url_retries.
+
+        @return: A URLParams object with max_wait_seconds, timeout_seconds,
+            num_retries.
+        """
+        max_wait = self.url_max_wait
+        try:
+            max_wait = int(self.ds_cfg.get("max_wait", self.url_max_wait))
+        except ValueError:
+            util.logexc(
+                LOG, "Config max_wait '%s' is not an int, using default '%s'",
+                self.ds_cfg.get("max_wait"), max_wait)
+
+        timeout = self.url_timeout
+        try:
+            timeout = max(
+                0, int(self.ds_cfg.get("timeout", self.url_timeout)))
+        except ValueError:
+            timeout = self.url_timeout
+            util.logexc(
+                LOG, "Config timeout '%s' is not an int, using default '%s'",
+                self.ds_cfg.get('timeout'), timeout)
+
+        retries = self.url_retries
+        try:
+            retries = int(self.ds_cfg.get("retries", self.url_retries))
+        except Exception:
+            util.logexc(
+                LOG, "Config retries '%s' is not an int, using default '%s'",
+                self.ds_cfg.get('retries'), retries)
+
+        return URLParams(max_wait, timeout, retries)
 
     def get_userdata(self, apply_filter=False):
         if self.userdata is None:
@@ -160,6 +334,17 @@ class DataSource(object):
         if self.vendordata is None:
             self.vendordata = self.ud_proc.process(self.get_vendordata_raw())
         return self.vendordata
+
+    @property
+    def fallback_interface(self):
+        """Determine the network interface used during local network config."""
+        if self._fallback_interface is None:
+            self._fallback_interface = net.find_fallback_nic()
+            if self._fallback_interface is None:
+                LOG.warning(
+                    "Did not find a fallback interface on %s.",
+                    self.cloud_name)
+        return self._fallback_interface
 
     @property
     def cloud_name(self):
@@ -340,6 +525,43 @@ class DataSource(object):
     def get_package_mirror_info(self):
         return self.distro.get_package_mirror_info(data_source=self)
 
+    def update_metadata(self, source_event_types):
+        """Refresh cached metadata if the datasource supports this event.
+
+        The datasource has a list of update_events which
+        trigger refreshing all cached metadata as well as refreshing the
+        network configuration.
+
+        @param source_event_types: List of EventTypes which may trigger a
+            metadata update.
+
+        @return True if the datasource did successfully update cached metadata
+            due to source_event_type.
+        """
+        supported_events = {}
+        for event in source_event_types:
+            for update_scope, update_events in self.update_events.items():
+                if event in update_events:
+                    if not supported_events.get(update_scope):
+                        supported_events[update_scope] = set()
+                    supported_events[update_scope].add(event)
+        for scope, matched_events in supported_events.items():
+            LOG.debug(
+                "Update datasource metadata and %s config due to events: %s",
+                scope, ', '.join(matched_events))
+            # Each datasource has a cached config property which needs clearing
+            # Once cleared that config property will be regenerated from
+            # current metadata.
+            self.clear_cached_attrs((('_%s_config' % scope, UNSET),))
+        if supported_events:
+            self.clear_cached_attrs()
+            result = self.get_data()
+            if result:
+                return True
+        LOG.debug("Datasource %s not updated for events: %s", self,
+                  ', '.join(source_event_types))
+        return False
+
     def check_instance_id(self, sys_cfg):
         # quickly (local check only) if self.instance_id is still
         return False
@@ -444,7 +666,7 @@ def find_source(sys_cfg, distro, paths, ds_deps, cfg_list, pkg_list, reporter):
             with myrep:
                 LOG.debug("Seeing if we can get any data from %s", cls)
                 s = cls(sys_cfg, distro, paths)
-                if s.get_data():
+                if s.update_metadata([EventType.BOOT_NEW_INSTANCE]):
                     myrep.message = "found %s data from %s" % (mode, name)
                     return (s, type_utils.obj_name(cls))
         except Exception:
@@ -515,6 +737,10 @@ def convert_vendordata(data, recurse=True):
                                       recurse=False)
         raise ValueError("vendordata['cloud-init'] cannot be dict")
     raise ValueError("Unknown data type for vendordata: %s" % type(data))
+
+
+class BrokenMetadata(IOError):
+    pass
 
 
 # 'depends' is a list of dependencies (DEP_FILESYSTEM)

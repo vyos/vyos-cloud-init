@@ -232,7 +232,7 @@ class OpenNebulaNetwork(object):
 
             # Set IPv6 default gateway
             gateway6 = self.get_gateway6(c_dev)
-            if gateway:
+            if gateway6:
                 devconf['gateway6'] = gateway6
 
             # Set DNS servers and search domains
@@ -378,7 +378,7 @@ def read_context_disk_dir(source_dir, asuser=None):
         if asuser is not None:
             try:
                 pwd.getpwnam(asuser)
-            except KeyError as e:
+            except KeyError:
                 raise BrokenContextDiskDir(
                     "configured user '{user}' does not exist".format(
                         user=asuser))

@@ -17,6 +17,14 @@ own way) internally a datasource abstract class was created to allow for a
 single way to access the different cloud systems methods to provide this data
 through the typical usage of subclasses.
 
+Any metadata processed by cloud-init's datasources is persisted as
+``/run/cloud0-init/instance-data.json``. Cloud-init provides tooling
+to quickly introspect some of that data. See :ref:`instance_metadata` for
+more information.
+
+
+Datasource API
+--------------
 The current interface that a datasource object must provide is the following:
 
 .. sourcecode:: python
@@ -52,14 +60,14 @@ The current interface that a datasource object must provide is the following:
     # or does not exist)
     def device_name_to_device(self, name)
 
-    # gets the locale string this instance should be applying 
+    # gets the locale string this instance should be applying
     # which typically used to adjust the instances locale settings files
     def get_locale(self)
 
     @property
     def availability_zone(self)
 
-    # gets the instance id that was assigned to this instance by the 
+    # gets the instance id that was assigned to this instance by the
     # cloud provider or when said instance id does not exist in the backing
     # metadata this will return 'iid-datasource'
     def get_instance_id(self)
@@ -80,6 +88,7 @@ Follow for more information.
 .. toctree::
    :maxdepth: 2
 
+   datasources/aliyun.rst
    datasources/altcloud.rst
    datasources/azure.rst
    datasources/cloudsigma.rst
@@ -91,6 +100,7 @@ Follow for more information.
    datasources/nocloud.rst
    datasources/opennebula.rst
    datasources/openstack.rst
+   datasources/oracle.rst
    datasources/ovf.rst
    datasources/smartos.rst
    datasources/fallback.rst

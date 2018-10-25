@@ -48,12 +48,9 @@ ADD_APT_REPO_MATCH = r"^[\w-]+:\w"
 
 TARGET = None
 
-
-def load_tfile(*args, **kwargs):
-    """load_tfile_or_url
-    load file and return content after decoding
-    """
-    return util.decode_binary(util.read_file_or_url(*args, **kwargs).contents)
+MOCK_LSB_RELEASE_DATA = {
+    'id': 'Ubuntu', 'description': 'Ubuntu 18.04.1 LTS',
+    'release': '18.04', 'codename': 'bionic'}
 
 
 class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
@@ -71,6 +68,9 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
         self.aptlistfile3 = os.path.join(self.tmp, "single-deb3.list")
         self.join = os.path.join
         self.matcher = re.compile(ADD_APT_REPO_MATCH).search
+        self.add_patch(
+            'cloudinit.config.cc_apt_configure.util.lsb_release',
+            'm_lsb_release', return_value=MOCK_LSB_RELEASE_DATA.copy())
 
     @staticmethod
     def _add_apt_sources(*args, **kwargs):
@@ -83,7 +83,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
         Get the most basic default mrror and release info to be used in tests
         """
         params = {}
-        params['RELEASE'] = util.lsb_release()['codename']
+        params['RELEASE'] = MOCK_LSB_RELEASE_DATA['release']
         arch = 'amd64'
         params['MIRROR'] = cc_apt_configure.\
             get_default_mirrors(arch)["PRIMARY"]
@@ -119,7 +119,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         self.assertTrue(os.path.isfile(filename))
 
-        contents = load_tfile(filename)
+        contents = util.load_file(filename)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", "http://test.ubuntu.com/ubuntu",
                                    "karmic-backports",
@@ -151,13 +151,13 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
         self._apt_src_basic(self.aptlistfile, cfg)
 
         # extra verify on two extra files of this test
-        contents = load_tfile(self.aptlistfile2)
+        contents = util.load_file(self.aptlistfile2)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", "http://test.ubuntu.com/ubuntu",
                                    "precise-backports",
                                    "main universe multiverse restricted"),
                                   contents, flags=re.IGNORECASE))
-        contents = load_tfile(self.aptlistfile3)
+        contents = util.load_file(self.aptlistfile3)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", "http://test.ubuntu.com/ubuntu",
                                    "lucid-backports",
@@ -174,7 +174,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         self.assertTrue(os.path.isfile(filename))
 
-        contents = load_tfile(filename)
+        contents = util.load_file(filename)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", params['MIRROR'], params['RELEASE'],
                                    "multiverse"),
@@ -201,12 +201,12 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         # extra verify on two extra files of this test
         params = self._get_default_params()
-        contents = load_tfile(self.aptlistfile2)
+        contents = util.load_file(self.aptlistfile2)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", params['MIRROR'], params['RELEASE'],
                                    "main"),
                                   contents, flags=re.IGNORECASE))
-        contents = load_tfile(self.aptlistfile3)
+        contents = util.load_file(self.aptlistfile3)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb", params['MIRROR'], params['RELEASE'],
                                    "universe"),
@@ -240,7 +240,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         self.assertTrue(os.path.isfile(filename))
 
-        contents = load_tfile(filename)
+        contents = util.load_file(filename)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb",
                                    ('http://ppa.launchpad.net/smoser/'
@@ -277,14 +277,14 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
                                    'keyid': "03683F77"}}
 
         self._apt_src_keyid(self.aptlistfile, cfg, 3)
-        contents = load_tfile(self.aptlistfile2)
+        contents = util.load_file(self.aptlistfile2)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb",
                                    ('http://ppa.launchpad.net/smoser/'
                                     'cloud-init-test/ubuntu'),
                                    "xenial", "universe"),
                                   contents, flags=re.IGNORECASE))
-        contents = load_tfile(self.aptlistfile3)
+        contents = util.load_file(self.aptlistfile3)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb",
                                    ('http://ppa.launchpad.net/smoser/'
@@ -310,7 +310,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         self.assertTrue(os.path.isfile(self.aptlistfile))
 
-        contents = load_tfile(self.aptlistfile)
+        contents = util.load_file(self.aptlistfile)
         self.assertTrue(re.search(r"%s %s %s %s\n" %
                                   ("deb",
                                    ('http://ppa.launchpad.net/smoser/'
@@ -471,7 +471,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
                              'uri':
                              'http://testsec.ubuntu.com/%s/' % component}]}
         post = ("%s_dists_%s-updates_InRelease" %
-                (component, util.lsb_release()['codename']))
+                (component, MOCK_LSB_RELEASE_DATA['codename']))
         fromfn = ("%s/%s_%s" % (pre, archive, post))
         tofn = ("%s/test.ubuntu.com_%s" % (pre, post))
 
@@ -528,7 +528,7 @@ class TestAptSourceConfig(t_help.FilesystemMockingTestCase):
 
         expected = sorted([npre + suff for opre, npre, suff in files])
         # create files
-        for (opre, npre, suff) in files:
+        for (opre, _npre, suff) in files:
             fpath = os.path.join(apt_lists_d, opre + suff)
             util.write_file(fpath, content=fpath)
 
@@ -949,7 +949,8 @@ deb http://ubuntu.com/ubuntu/ xenial-proposed main""")
         self.assertEqual(
             orig, cc_apt_configure.disable_suites(["proposed"], orig, rel))
 
-    def test_apt_v3_mirror_search_dns(self):
+    @mock.patch("cloudinit.util.get_hostname", return_value='abc.localdomain')
+    def test_apt_v3_mirror_search_dns(self, m_get_hostname):
         """test_apt_v3_mirror_search_dns - Test searching dns patterns"""
         pmir = "phit"
         smir = "shit"

@@ -4,6 +4,7 @@
 
 from functools import partial
 import os
+import yaml
 
 from tests.cloud_tests import LOG
 from tests.cloud_tests import stage, util
@@ -25,10 +26,9 @@ def installed_package_version(image, package, ensure_installed=True):
     else:
         raise NotImplementedError
 
-    msg = 'query version for package: {}'.format(package)
-    (out, err, exit) = image.execute(
-        cmd, description=msg, rcs=(0,) if ensure_installed else range(0, 256))
-    return out.strip()
+    return image.execute(
+        cmd, description='query version for package: {}'.format(package),
+        rcs=(0,) if ensure_installed else range(0, 256))[0].strip()
 
 
 def install_deb(args, image):
@@ -54,7 +54,7 @@ def install_deb(args, image):
          remote_path], description=msg)
     # check installed deb version matches package
     fmt = ['-W', "--showformat=${Version}"]
-    (out, err, exit) = image.execute(['dpkg-deb'] + fmt + [remote_path])
+    out = image.execute(['dpkg-deb'] + fmt + [remote_path])[0]
     expected_version = out.strip()
     found_version = installed_package_version(image, 'cloud-init')
     if expected_version != found_version:
@@ -85,7 +85,7 @@ def install_rpm(args, image):
     image.execute(['rpm', '-U', remote_path], description=msg)
 
     fmt = ['--queryformat', '"%{VERSION}"']
-    (out, err, exit) = image.execute(['rpm', '-q'] + fmt + [remote_path])
+    (out, _err, _exit) = image.execute(['rpm', '-q'] + fmt + [remote_path])
     expected_version = out.strip()
     found_version = installed_package_version(image, 'cloud-init')
     if expected_version != found_version:
@@ -221,7 +221,14 @@ def setup_image(args, image):
     calls = [partial(stage.run_single, desc, partial(func, args, image))
              for name, func, desc in handlers if getattr(args, name, None)]
 
-    LOG.info('setting up %s', image)
+    try:
+        data = yaml.load(image.read_data("/etc/cloud/build.info", decode=True))
+        info = ' '.join(["%s=%s" % (k, data.get(k))
+                         for k in ("build_name", "serial") if k in data])
+    except Exception as e:
+        info = "N/A (%s)" % e
+
+    LOG.info('setting up %s (%s)', image, info)
     res = stage.run_stage(
         'set up for {}'.format(image), calls, continue_after_error=False)
     return res

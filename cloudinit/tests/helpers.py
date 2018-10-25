@@ -3,32 +3,43 @@
 from __future__ import print_function
 
 import functools
+import httpretty
 import logging
 import os
 import shutil
 import sys
 import tempfile
-import unittest
+import time
 
 import mock
 import six
 import unittest2
+from unittest2.util import strclass
 
 try:
-    from contextlib import ExitStack
+    from contextlib import ExitStack, contextmanager
 except ImportError:
-    from contextlib2 import ExitStack
+    from contextlib2 import ExitStack, contextmanager
 
 try:
     from configparser import ConfigParser
 except ImportError:
     from ConfigParser import ConfigParser
 
+from cloudinit.config.schema import (
+    SchemaValidationError, validate_cloudconfig_schema)
+from cloudinit import cloud
+from cloudinit import distros
 from cloudinit import helpers as ch
+from cloudinit.sources import DataSourceNone
+from cloudinit.templater import JINJA_AVAILABLE
 from cloudinit import util
+
+_real_subp = util.subp
 
 # Used for skipping tests
 SkipTest = unittest2.SkipTest
+skipIf = unittest2.skipIf
 
 # Used for detecting different python versions
 PY2 = False
@@ -108,12 +119,15 @@ class TestCase(unittest2.TestCase):
         super(TestCase, self).setUp()
         self.reset_global_state()
 
-    def add_patch(self, target, attr, **kwargs):
+    def shortDescription(self):
+        return strclass(self.__class__) + '.' + self._testMethodName
+
+    def add_patch(self, target, attr, *args, **kwargs):
         """Patches specified target object and sets it as attr on test
         instance also schedules cleanup"""
         if 'autospec' not in kwargs:
             kwargs['autospec'] = True
-        m = mock.patch(target, **kwargs)
+        m = mock.patch(target, *args, **kwargs)
         p = m.start()
         self.addCleanup(m.stop)
         setattr(self, attr, p)
@@ -136,6 +150,17 @@ class CiTestCase(TestCase):
     # Subclass overrides for specific test behavior
     # Whether or not a unit test needs logfile setup
     with_logs = False
+    allowed_subp = False
+    SUBP_SHELL_TRUE = "shell=true"
+
+    @contextmanager
+    def allow_subp(self, allowed_subp):
+        orig = self.allowed_subp
+        try:
+            self.allowed_subp = allowed_subp
+            yield
+        finally:
+            self.allowed_subp = orig
 
     def setUp(self):
         super(CiTestCase, self).setUp()
@@ -148,11 +173,41 @@ class CiTestCase(TestCase):
             handler.setFormatter(formatter)
             self.old_handlers = self.logger.handlers
             self.logger.handlers = [handler]
+        if self.allowed_subp is True:
+            util.subp = _real_subp
+        else:
+            util.subp = self._fake_subp
+
+    def _fake_subp(self, *args, **kwargs):
+        if 'args' in kwargs:
+            cmd = kwargs['args']
+        else:
+            cmd = args[0]
+
+        if not isinstance(cmd, six.string_types):
+            cmd = cmd[0]
+        pass_through = False
+        if not isinstance(self.allowed_subp, (list, bool)):
+            raise TypeError("self.allowed_subp supports list or bool.")
+        if isinstance(self.allowed_subp, bool):
+            pass_through = self.allowed_subp
+        else:
+            pass_through = (
+                (cmd in self.allowed_subp) or
+                (self.SUBP_SHELL_TRUE in self.allowed_subp and
+                 kwargs.get('shell')))
+        if pass_through:
+            return _real_subp(*args, **kwargs)
+        raise Exception(
+            "called subp. set self.allowed_subp=True to allow\n subp(%s)" %
+            ', '.join([str(repr(a)) for a in args] +
+                      ["%s=%s" % (k, repr(v)) for k, v in kwargs.items()]))
 
     def tearDown(self):
         if self.with_logs:
             # Remove the handler we setup
             logging.getLogger().handlers = self.old_handlers
+        util.subp = _real_subp
         super(CiTestCase, self).tearDown()
 
     def tmp_dir(self, dir=None, cleanup=True):
@@ -183,6 +238,29 @@ class CiTestCase(TestCase):
         """
         raise SystemExit(code)
 
+    def tmp_cloud(self, distro, sys_cfg=None, metadata=None):
+        """Create a cloud with tmp working directory paths.
+
+        @param distro: Name of the distro to attach to the cloud.
+        @param metadata: Optional metadata to set on the datasource.
+
+        @return: The built cloud instance.
+        """
+        self.new_root = self.tmp_dir()
+        if not sys_cfg:
+            sys_cfg = {}
+        tmp_paths = {}
+        for var in ['templates_dir', 'run_dir', 'cloud_dir']:
+            tmp_paths[var] = self.tmp_path(var, dir=self.new_root)
+            util.ensure_dir(tmp_paths[var])
+        self.paths = ch.Paths(tmp_paths)
+        cls = distros.fetch(distro)
+        mydist = cls(distro, sys_cfg, self.paths)
+        myds = DataSourceNone.DataSourceNone(sys_cfg, mydist, self.paths)
+        if metadata:
+            myds.metadata.update(metadata)
+        return cloud.Cloud(myds, self.paths, sys_cfg, mydist, None)
+
 
 class ResourceUsingTestCase(CiTestCase):
 
@@ -190,35 +268,11 @@ class ResourceUsingTestCase(CiTestCase):
         super(ResourceUsingTestCase, self).setUp()
         self.resource_path = None
 
-    def resourceLocation(self, subname=None):
-        if self.resource_path is None:
-            paths = [
-                os.path.join('tests', 'data'),
-                os.path.join('data'),
-                os.path.join(os.pardir, 'tests', 'data'),
-                os.path.join(os.pardir, 'data'),
-            ]
-            for p in paths:
-                if os.path.isdir(p):
-                    self.resource_path = p
-                    break
-        self.assertTrue((self.resource_path and
-                         os.path.isdir(self.resource_path)),
-                        msg="Unable to locate test resource data path!")
-        if not subname:
-            return self.resource_path
-        return os.path.join(self.resource_path, subname)
-
-    def readResource(self, name):
-        where = self.resourceLocation(name)
-        with open(where, 'r') as fh:
-            return fh.read()
-
     def getCloudPaths(self, ds=None):
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmpdir)
         cp = ch.Paths({'cloud_dir': tmpdir,
-                       'templates_dir': self.resourceLocation()},
+                       'templates_dir': resourceLocation()},
                       ds=ds)
         return cp
 
@@ -234,7 +288,7 @@ class FilesystemMockingTestCase(ResourceUsingTestCase):
         ResourceUsingTestCase.tearDown(self)
 
     def replicateTestRoot(self, example_root, target_root):
-        real_root = self.resourceLocation()
+        real_root = resourceLocation()
         real_root = os.path.join(real_root, 'roots', example_root)
         for (dir_path, _dirnames, filenames) in os.walk(real_root):
             real_path = dir_path
@@ -285,7 +339,8 @@ class FilesystemMockingTestCase(ResourceUsingTestCase):
             os.path: [('isfile', 1), ('exists', 1),
                       ('islink', 1), ('isdir', 1), ('lexists', 1)],
             os: [('listdir', 1), ('mkdir', 1),
-                 ('lstat', 1), ('symlink', 2)]
+                 ('lstat', 1), ('symlink', 2),
+                 ('stat', 1)]
         }
 
         if hasattr(os, 'scandir'):
@@ -319,21 +374,52 @@ class FilesystemMockingTestCase(ResourceUsingTestCase):
         self.patchOS(root)
         return root
 
+    @contextmanager
+    def reRooted(self, root=None):
+        try:
+            yield self.reRoot(root)
+        finally:
+            self.patched_funcs.close()
+
 
 class HttprettyTestCase(CiTestCase):
     # necessary as http_proxy gets in the way of httpretty
     # https://github.com/gabrielfalcao/HTTPretty/issues/122
+    # Also make sure that allow_net_connect is set to False.
+    # And make sure reset and enable/disable are done.
 
     def setUp(self):
         self.restore_proxy = os.environ.get('http_proxy')
         if self.restore_proxy is not None:
             del os.environ['http_proxy']
         super(HttprettyTestCase, self).setUp()
+        httpretty.HTTPretty.allow_net_connect = False
+        httpretty.reset()
+        httpretty.enable()
 
     def tearDown(self):
+        httpretty.disable()
+        httpretty.reset()
         if self.restore_proxy:
             os.environ['http_proxy'] = self.restore_proxy
         super(HttprettyTestCase, self).tearDown()
+
+
+class SchemaTestCaseMixin(unittest2.TestCase):
+
+    def assertSchemaValid(self, cfg, msg="Valid Schema failed validation."):
+        """Assert the config is valid per self.schema.
+
+        If there is only one top level key in the schema properties, then
+        the cfg will be put under that key."""
+        props = list(self.schema.get('properties'))
+        # put cfg under top level key if there is only one in the schema
+        if len(props) == 1:
+            cfg = {props[0]: cfg}
+        try:
+            validate_cloudconfig_schema(cfg, self.schema, strict=True)
+        except SchemaValidationError:
+            self.fail(msg)
 
 
 def populate_dir(path, files):
@@ -354,11 +440,20 @@ def populate_dir(path, files):
     return ret
 
 
+def populate_dir_with_ts(path, data):
+    """data is {'file': ('contents', mtime)}.  mtime relative to now."""
+    populate_dir(path, dict((k, v[0]) for k, v in data.items()))
+    btime = time.time()
+    for fpath, (_contents, mtime) in data.items():
+        ts = btime + mtime if mtime else btime
+        os.utime(os.path.sep.join((path, fpath)), (ts, ts))
+
+
 def dir2dict(startdir, prefix=None):
     flist = {}
     if prefix is None:
         prefix = startdir
-    for root, dirs, files in os.walk(startdir):
+    for root, _dirs, files in os.walk(startdir):
         for fname in files:
             fpath = os.path.join(root, fname)
             key = fpath[len(prefix):]
@@ -399,19 +494,16 @@ def wrap_and_call(prefix, mocks, func, *args, **kwargs):
             p.stop()
 
 
-try:
-    skipIf = unittest.skipIf
-except AttributeError:
-    # Python 2.6.  Doesn't have to be high fidelity.
-    def skipIf(condition, reason):
-        def decorator(func):
-            def wrapper(*args, **kws):
-                if condition:
-                    return func(*args, **kws)
-                else:
-                    print(reason, file=sys.stderr)
-            return wrapper
-        return decorator
+def resourceLocation(subname=None):
+    path = os.path.join('tests', 'data')
+    if not subname:
+        return path
+    return os.path.join(path, subname)
+
+
+def readResource(name, mode='r'):
+    with open(resourceLocation(name), mode) as fh:
+        return fh.read()
 
 
 try:
@@ -425,6 +517,14 @@ except ImportError:
 def skipUnlessJsonSchema():
     return skipIf(
         _missing_jsonschema_dep, "No python-jsonschema dependency present.")
+
+
+def skipUnlessJinja():
+    return skipIf(not JINJA_AVAILABLE, "No jinja dependency present.")
+
+
+def skipIfJinja():
+    return skipIf(JINJA_AVAILABLE, "Jinja dependency present.")
 
 
 # older versions of mock do not have the useful 'assert_not_called'

@@ -1,6 +1,8 @@
-*******
-Formats
-*******
+.. _user_data_formats:
+
+*****************
+User-Data Formats
+*****************
 
 User data that will be acted upon by cloud-init must be in one of the following types.
 
@@ -65,6 +67,11 @@ Typically used by those who just want to execute a shell script.
 
 Begins with: ``#!`` or ``Content-Type: text/x-shellscript`` when using a MIME archive.
 
+.. note::
+   New in cloud-init v. 18.4: User-data scripts can also render cloud instance
+   metadata variables using jinja templating. See
+   :ref:`instance_metadata` for more information.
+
 Example
 -------
 
@@ -103,11 +110,17 @@ These things include:
 - certain ssh keys should be imported
 - *and many more...*
 
-**Note:** The file must be valid yaml syntax.
+.. note::
+   This file must be valid yaml syntax.
 
 See the :ref:`yaml_examples` section for a commented set of examples of supported cloud config formats.
 
 Begins with: ``#cloud-config`` or ``Content-Type: text/cloud-config`` when using a MIME archive.
+
+.. note::
+   New in cloud-init v. 18.4: Cloud config dta can also render cloud instance
+   metadata variables using jinja templating. See
+   :ref:`instance_metadata` for more information.
 
 Upstart Job
 ===========
@@ -121,7 +134,7 @@ Cloud Boothook
 
 This content is ``boothook`` data. It is stored in a file under ``/var/lib/cloud`` and then executed immediately.
 This is the earliest ``hook`` available. Note, that there is no mechanism provided for running only once. The boothook must take care of this itself.
-It is provided with the instance id in the environment variable ``INSTANCE_I``. This could be made use of to provide a 'once-per-instance' type of functionality.
+It is provided with the instance id in the environment variable ``INSTANCE_ID``. This could be made use of to provide a 'once-per-instance' type of functionality.
 
 Begins with: ``#cloud-boothook`` or ``Content-Type: text/cloud-boothook`` when using a MIME archive.
 

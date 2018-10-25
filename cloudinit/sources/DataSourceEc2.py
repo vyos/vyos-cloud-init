@@ -29,8 +29,6 @@ STRICT_ID_PATH = ("datasource", "Ec2", "strict_id")
 STRICT_ID_DEFAULT = "warn"
 DEFAULT_PRIMARY_NIC = 'eth0'
 
-_unset = "_unset"
-
 
 class Platforms(object):
     # TODO Rename and move to cloudinit.cloud.CloudNames
@@ -67,15 +65,16 @@ class DataSourceEc2(sources.DataSource):
     # for extended metadata content. IPv6 support comes in 2016-09-02
     extended_metadata_versions = ['2016-09-02']
 
+    # Setup read_url parameters per get_url_params.
+    url_max_wait = 120
+    url_timeout = 50
+
     _cloud_platform = None
 
-    _network_config = _unset  # Used for caching calculated network config v1
+    _network_config = sources.UNSET  # Used to cache calculated network cfg v1
 
     # Whether we want to get network configuration from the metadata service.
-    get_network_metadata = False
-
-    # Track the discovered fallback nic for use in configuration generation.
-    _fallback_interface = None
+    perform_dhcp_setup = False
 
     def __init__(self, sys_cfg, distro, paths):
         super(DataSourceEc2, self).__init__(sys_cfg, distro, paths)
@@ -106,7 +105,7 @@ class DataSourceEc2(sources.DataSource):
         elif self.cloud_platform == Platforms.NO_EC2_METADATA:
             return False
 
-        if self.get_network_metadata:  # Setup networking in init-local stage.
+        if self.perform_dhcp_setup:  # Setup networking in init-local stage.
             if util.is_FreeBSD():
                 LOG.debug("FreeBSD doesn't support running dhclient with -sf")
                 return False
@@ -166,27 +165,11 @@ class DataSourceEc2(sources.DataSource):
         else:
             return self.metadata['instance-id']
 
-    def _get_url_settings(self):
-        mcfg = self.ds_cfg
-        max_wait = 120
-        try:
-            max_wait = int(mcfg.get("max_wait", max_wait))
-        except Exception:
-            util.logexc(LOG, "Failed to get max wait. using %s", max_wait)
-
-        timeout = 50
-        try:
-            timeout = max(0, int(mcfg.get("timeout", timeout)))
-        except Exception:
-            util.logexc(LOG, "Failed to get timeout, using %s", timeout)
-
-        return (max_wait, timeout)
-
     def wait_for_metadata_service(self):
         mcfg = self.ds_cfg
 
-        (max_wait, timeout) = self._get_url_settings()
-        if max_wait <= 0:
+        url_params = self.get_url_params()
+        if url_params.max_wait_seconds <= 0:
             return False
 
         # Remove addresses from the list that wont resolve.
@@ -213,7 +196,8 @@ class DataSourceEc2(sources.DataSource):
 
         start_time = time.time()
         url = uhelp.wait_for_url(
-            urls=urls, max_wait=max_wait, timeout=timeout, status_cb=LOG.warn)
+            urls=urls, max_wait=url_params.max_wait_seconds,
+            timeout=url_params.timeout_seconds, status_cb=LOG.warn)
 
         if url:
             self.metadata_address = url2base[url]
@@ -318,11 +302,11 @@ class DataSourceEc2(sources.DataSource):
     @property
     def network_config(self):
         """Return a network config dict for rendering ENI or netplan files."""
-        if self._network_config != _unset:
+        if self._network_config != sources.UNSET:
             return self._network_config
 
         if self.metadata is None:
-            # this would happen if get_data hadn't been called. leave as _unset
+            # this would happen if get_data hadn't been called. leave as UNSET
             LOG.warning(
                 "Unexpected call to network_config when metadata is None.")
             return None
@@ -361,9 +345,7 @@ class DataSourceEc2(sources.DataSource):
                 self._fallback_interface = _legacy_fbnic
                 self.fallback_nic = None
             else:
-                self._fallback_interface = net.find_fallback_nic()
-                if self._fallback_interface is None:
-                    LOG.warning("Did not find a fallback interface on EC2.")
+                return super(DataSourceEc2, self).fallback_interface
         return self._fallback_interface
 
     def _crawl_metadata(self):
@@ -398,7 +380,7 @@ class DataSourceEc2Local(DataSourceEc2):
     metadata service. If the metadata service provides network configuration
     then render the network configuration for that instance based on metadata.
     """
-    get_network_metadata = True  # Get metadata network config if present
+    perform_dhcp_setup = True  # Use dhcp before querying metadata
 
     def get_data(self):
         supported_platforms = (Platforms.AWS,)

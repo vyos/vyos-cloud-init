@@ -7,6 +7,8 @@
 import copy
 import functools
 import logging
+import socket
+import struct
 
 import six
 
@@ -481,6 +483,10 @@ class NetworkStateInterpreter(object):
 
         interfaces.update({iface['name']: iface})
 
+    @ensure_command_keys(['name'])
+    def handle_infiniband(self, command):
+        self.handle_physical(command)
+
     @ensure_command_keys(['address'])
     def handle_nameserver(self, command):
         dns = self._network_state.get('dns')
@@ -886,12 +892,9 @@ def net_prefix_to_ipv4_mask(prefix):
     This is the inverse of ipv4_mask_to_net_prefix.
         24 -> "255.255.255.0"
     Also supports input as a string."""
-
-    mask = [0, 0, 0, 0]
-    for i in list(range(0, int(prefix))):
-        idx = int(i / 8)
-        mask[idx] = mask[idx] + (1 << (7 - i % 8))
-    return ".".join([str(x) for x in mask])
+    mask = socket.inet_ntoa(
+        struct.pack(">I", (0xffffffff << (32 - int(prefix)) & 0xffffffff)))
+    return mask
 
 
 def ipv4_mask_to_net_prefix(mask):

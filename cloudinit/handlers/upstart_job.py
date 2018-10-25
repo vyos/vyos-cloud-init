@@ -18,18 +18,15 @@ from cloudinit import util
 from cloudinit.settings import (PER_INSTANCE)
 
 LOG = logging.getLogger(__name__)
-UPSTART_PREFIX = "#upstart-job"
 
 
 class UpstartJobPartHandler(handlers.Handler):
+
+    prefixes = ['#upstart-job']
+
     def __init__(self, paths, **_kwargs):
         handlers.Handler.__init__(self, PER_INSTANCE)
         self.upstart_dir = paths.upstart_conf_d
-
-    def list_types(self):
-        return [
-            handlers.type_from_starts_with(UPSTART_PREFIX),
-        ]
 
     def handle_part(self, data, ctype, filename, payload, frequency):
         if ctype in handlers.CONTENT_SIGNALS:
@@ -97,7 +94,7 @@ def _has_suitable_upstart():
             else:
                 util.logexc(LOG, "dpkg --compare-versions failed [%s]",
                             e.exit_code)
-        except Exception as e:
+        except Exception:
             util.logexc(LOG, "dpkg --compare-versions failed")
         return False
     else:

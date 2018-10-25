@@ -85,7 +85,9 @@ class TestFindEndpoint(CiTestCase):
         self.dhcp_options.return_value = {"eth0": {"unknown_245": "5:4:3:2"}}
         self.assertEqual('5.4.3.2', wa_shim.find_endpoint(None))
 
-    def test_latest_lease_used(self):
+    @mock.patch('cloudinit.sources.helpers.azure.util.is_FreeBSD')
+    def test_latest_lease_used(self, m_is_freebsd):
+        m_is_freebsd.return_value = False  # To avoid hitting load_file
         encoded_addresses = ['5:4:3:2', '4:3:2:1']
         file_content = '\n'.join([self._build_lease_content(encoded_address)
                                   for encoded_address in encoded_addresses])
@@ -195,7 +197,7 @@ class TestAzureEndpointHttpClient(CiTestCase):
         self.addCleanup(patches.close)
 
         self.read_file_or_url = patches.enter_context(
-            mock.patch.object(azure_helper.util, 'read_file_or_url'))
+            mock.patch.object(azure_helper.url_helper, 'read_file_or_url'))
 
     def test_non_secure_get(self):
         client = azure_helper.AzureEndpointHttpClient(mock.MagicMock())

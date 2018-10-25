@@ -9,7 +9,7 @@ from cloudinit.config.cc_snap import (
 from cloudinit.config.schema import validate_cloudconfig_schema
 from cloudinit import util
 from cloudinit.tests.helpers import (
-    CiTestCase, mock, wrap_and_call, skipUnlessJsonSchema)
+    CiTestCase, SchemaTestCaseMixin, mock, wrap_and_call, skipUnlessJsonSchema)
 
 
 SYSTEM_USER_ASSERTION = """\
@@ -162,6 +162,7 @@ class TestAddAssertions(CiTestCase):
 class TestRunCommands(CiTestCase):
 
     with_logs = True
+    allowed_subp = [CiTestCase.SUBP_SHELL_TRUE]
 
     def setUp(self):
         super(TestRunCommands, self).setUp()
@@ -245,9 +246,10 @@ class TestRunCommands(CiTestCase):
 
 
 @skipUnlessJsonSchema()
-class TestSchema(CiTestCase):
+class TestSchema(CiTestCase, SchemaTestCaseMixin):
 
     with_logs = True
+    schema = schema
 
     def test_schema_warns_on_snap_not_as_dict(self):
         """If the snap configuration is not a dict, emit a warning."""
@@ -340,6 +342,30 @@ class TestSchema(CiTestCase):
             {'snap': {'assertions': {'01': 'also valid'}}}, schema)
         self.assertEqual('', self.logs.getvalue())
 
+    def test_duplicates_are_fine_array_array(self):
+        """Duplicated commands array/array entries are allowed."""
+        self.assertSchemaValid(
+            {'commands': [["echo", "bye"], ["echo" "bye"]]},
+            "command entries can be duplicate.")
+
+    def test_duplicates_are_fine_array_string(self):
+        """Duplicated commands array/string entries are allowed."""
+        self.assertSchemaValid(
+            {'commands': ["echo bye", "echo bye"]},
+            "command entries can be duplicate.")
+
+    def test_duplicates_are_fine_dict_array(self):
+        """Duplicated commands dict/array entries are allowed."""
+        self.assertSchemaValid(
+            {'commands': {'00': ["echo", "bye"], '01': ["echo", "bye"]}},
+            "command entries can be duplicate.")
+
+    def test_duplicates_are_fine_dict_string(self):
+        """Duplicated commands dict/string entries are allowed."""
+        self.assertSchemaValid(
+            {'commands': {'00': "echo bye", '01': "echo bye"}},
+            "command entries can be duplicate.")
+
 
 class TestHandle(CiTestCase):
 
@@ -399,8 +425,10 @@ class TestHandle(CiTestCase):
             'snap': {'commands': ['echo "HI" >> %s' % outfile,
                                   'echo "MOM" >> %s' % outfile]}}
         mock_path = 'cloudinit.config.cc_snap.sys.stderr'
-        with mock.patch(mock_path, new_callable=StringIO):
-            handle('snap', cfg=cfg, cloud=None, log=self.logger, args=None)
+        with self.allow_subp([CiTestCase.SUBP_SHELL_TRUE]):
+            with mock.patch(mock_path, new_callable=StringIO):
+                handle('snap', cfg=cfg, cloud=None, log=self.logger, args=None)
+
         self.assertEqual('HI\nMOM\n', util.load_file(outfile))
 
     @mock.patch('cloudinit.config.cc_snap.util.subp')

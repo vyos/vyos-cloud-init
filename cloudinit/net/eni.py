@@ -10,8 +10,11 @@ from . import ParserError
 from . import renderer
 from .network_state import subnet_is_ipv6
 
+from cloudinit import log as logging
 from cloudinit import util
 
+
+LOG = logging.getLogger(__name__)
 
 NET_CONFIG_COMMANDS = [
     "pre-up", "up", "post-up", "down", "pre-down", "post-down",
@@ -61,7 +64,7 @@ def _iface_add_subnet(iface, subnet):
 
 
 # TODO: switch to valid_map for attrs
-def _iface_add_attrs(iface, index):
+def _iface_add_attrs(iface, index, ipv4_subnet_mtu):
     # If the index is non-zero, this is an alias interface. Alias interfaces
     # represent additional interface addresses, and should not have additional
     # attributes. (extra attributes here are almost always either incorrect,
@@ -99,6 +102,13 @@ def _iface_add_attrs(iface, index):
         if type(value) == bool:
             value = 'on' if iface[key] else 'off'
         if not value or key in ignore_map:
+            continue
+        if key == 'mtu' and ipv4_subnet_mtu:
+            if value != ipv4_subnet_mtu:
+                LOG.warning(
+                    "Network config: ignoring %s device-level mtu:%s because"
+                    " ipv4 subnet-level mtu:%s provided.",
+                    iface['name'], value, ipv4_subnet_mtu)
             continue
         if key in multiline_keys:
             for v in value:
@@ -237,8 +247,15 @@ def _parse_deb_config_data(ifaces, contents, src_dir, src_path):
                 ifaces[currif]['bridge']['ports'] = []
                 for iface in split[1:]:
                     ifaces[currif]['bridge']['ports'].append(iface)
-            elif option == "bridge_hw" and split[1].lower() == "mac":
-                ifaces[currif]['bridge']['mac'] = split[2]
+            elif option == "bridge_hw":
+                # doc is confusing and thus some may put literal 'MAC'
+                #    bridge_hw MAC <address>
+                # but correct is:
+                #    bridge_hw <address>
+                if split[1].lower() == "mac":
+                    ifaces[currif]['bridge']['mac'] = split[2]
+                else:
+                    ifaces[currif]['bridge']['mac'] = split[1]
             elif option == "bridge_pathcost":
                 if 'pathcost' not in ifaces[currif]['bridge']:
                     ifaces[currif]['bridge']['pathcost'] = {}
@@ -377,12 +394,15 @@ class Renderer(renderer.Renderer):
         subnets = iface.get('subnets', {})
         if subnets:
             for index, subnet in enumerate(subnets):
+                ipv4_subnet_mtu = None
                 iface['index'] = index
                 iface['mode'] = subnet['type']
                 iface['control'] = subnet.get('control', 'auto')
                 subnet_inet = 'inet'
                 if subnet_is_ipv6(subnet):
                     subnet_inet += '6'
+                else:
+                    ipv4_subnet_mtu = subnet.get('mtu')
                 iface['inet'] = subnet_inet
                 if subnet['type'].startswith('dhcp'):
                     iface['mode'] = 'dhcp'
@@ -397,7 +417,7 @@ class Renderer(renderer.Renderer):
                     _iface_start_entry(
                         iface, index, render_hwaddress=render_hwaddress) +
                     _iface_add_subnet(iface, subnet) +
-                    _iface_add_attrs(iface, index)
+                    _iface_add_attrs(iface, index, ipv4_subnet_mtu)
                 )
                 for route in subnet.get('routes', []):
                     lines.extend(self._render_route(route, indent="    "))
@@ -409,7 +429,8 @@ class Renderer(renderer.Renderer):
             if 'bond-master' in iface or 'bond-slaves' in iface:
                 lines.append("auto {name}".format(**iface))
             lines.append("iface {name} {inet} {mode}".format(**iface))
-            lines.extend(_iface_add_attrs(iface, index=0))
+            lines.extend(
+                _iface_add_attrs(iface, index=0, ipv4_subnet_mtu=None))
             sections.append(lines)
         return sections
 
@@ -459,7 +480,7 @@ class Renderer(renderer.Renderer):
 
         return '\n\n'.join(['\n'.join(s) for s in sections]) + "\n"
 
-    def render_network_state(self, network_state, target=None):
+    def render_network_state(self, network_state, templates=None, target=None):
         fpeni = util.target_path(target, self.eni_path)
         util.ensure_dir(os.path.dirname(fpeni))
         header = self.eni_header if self.eni_header else ""
