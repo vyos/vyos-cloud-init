@@ -615,8 +615,8 @@ def get_linux_distro():
         distro_name = os_release.get('ID', '')
         distro_version = os_release.get('VERSION_ID', '')
         if 'sles' in distro_name or 'suse' in distro_name:
-            # RELEASE_BLOCKER: We will drop this sles ivergent behavior in
-            # before 18.4 so that get_linux_distro returns a named tuple
+            # RELEASE_BLOCKER: We will drop this sles divergent behavior in
+            # the future so that get_linux_distro returns a named tuple
             # which will include both version codename and architecture
             # on all distributions.
             flavor = platform.machine()
@@ -668,7 +668,8 @@ def system_info():
             var = 'ubuntu'
         elif linux_dist == 'redhat':
             var = 'rhel'
-        elif linux_dist in ('opensuse', 'sles'):
+        elif linux_dist in (
+                'opensuse', 'opensuse-tumbleweed', 'opensuse-leap', 'sles'):
             var = 'suse'
         else:
             var = 'linux'
@@ -2169,6 +2170,11 @@ def is_container():
         pass
 
     return False
+
+
+def is_lxd():
+    """Check to see if we are running in a lxd container."""
+    return os.path.exists('/dev/lxd/sock')
 
 
 def get_proc_env(pid, encoding='utf-8', errors='replace'):
