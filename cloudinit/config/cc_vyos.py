@@ -22,6 +22,7 @@ import os
 import sys
 import ast
 
+from ipaddress import IPv4Network
 from cloudinit import util
 
 from cloudinit.distros import ug_util
@@ -84,6 +85,51 @@ def set_ssh_login(config, user, key_string, key_x):
     config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)  
 
 
+def set_config_cloud(config, hostname):
+    config.set(['service', 'ssh'], replace=True)
+    config.set(['service', 'ssh', 'port'], value='22', replace=True)
+    config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
+    config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
+    config.set_tag(['interfaces', 'ethernet'])
+    config.set(['system', 'host-name'], value=hostname, replace=True)
+
+
+def set_config_ovf(config, hostname, metadata):
+    ip_0 = metadata['ip0'] 
+    mask_0 = metadata['netmask0']
+    gateway = metadata['gateway']
+    DNS = list(metadata['DNS'].replace(" ", "").split(","))
+    NTP = list(metadata['NTP'].replace(" ", "").split(","))
+
+    if ip_0 != '' and mask_0 != '' and gateway != '': 
+        cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
+        ipcidr = ip_0 + '/' + cidr
+
+        config.set(['interfaces', 'ethernet', 'eth0', 'address'], value=ipcidr, replace=True)
+        config.set_tag(['interfaces', 'ethernet'])
+        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=gateway, replace=True)
+        config.set_tag(['protocols', 'static', 'route'])
+        config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
+    else:
+        config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
+        config.set_tag(['interfaces', 'ethernet'])
+
+    DNS = [ server for server in DNS if server != "" ]
+    if DNS:
+        for server in DNS:
+            config.set(['system', 'name-server'], value=server, replace=False)
+
+    NTP = [ server for server in NTP if server != "" ]
+    if NTP:
+        for server in NTP:
+            config.set(['system', 'ntp', 'server'], value=server, replace=False)
+        config.set_tag(['system', 'ntp', 'server'])
+
+    config.set(['service', 'ssh'], replace=True)
+    config.set(['service', 'ssh', 'port'], value='22', replace=True)
+    config.set(['system', 'host-name'], value=hostname, replace=True)
+
+
 def handle(name, cfg, cloud, log, _args):
     cfg_file_name = '/opt/vyatta/etc/config/config.boot'
     bak_file_name = '/opt/vyatta/etc/config.boot.default'
@@ -102,7 +148,7 @@ def handle(name, cfg, cloud, log, _args):
         config_file = f.read()
     config = ConfigTree(config_file)
 
-    if 'DataSourceAzure' in str(cloud.datasource):
+    if 'Azure' in str(cloud.datasource):
         encrypted_pass = True
         for key, val in users.items():
             user = key
@@ -114,6 +160,22 @@ def handle(name, cfg, cloud, log, _args):
             for ssh_key in vyos_keys:
                 set_ssh_login(config, user, ssh_key, key_x)
                 key_x = key_x + 1
+        set_config_cloud(config, hostname) 
+    elif 'OVF' in str(cloud.datasource):
+        for user in users:
+            password = util.get_cfg_option_str(cfg, "password", None)
+            if password:
+                set_pass_login(config, user, password, encrypted_pass)
+
+            vyos_keys = cloud.get_public_ssh_keys() or []
+            if "ssh_authorized_keys" in cfg:
+                cfgkeys = cfg["ssh_authorized_keys"]
+                vyos_keys.extend(cfgkeys)
+
+            for ssh_key in vyos_keys:
+                set_ssh_login(config, user, ssh_key, key_x)
+                key_x = key_x + 1
+        set_config_ovf(config, hostname, metadata)
     else:        
         for user in users:
             password = util.get_cfg_option_str(cfg, "passwd", None)
@@ -128,13 +190,7 @@ def handle(name, cfg, cloud, log, _args):
             for ssh_key in vyos_keys:
                 set_ssh_login(config, user, ssh_key, key_x)
                 key_x = key_x + 1
-
-    config.set(['service', 'ssh'], replace=True)
-    config.set(['service', 'ssh', 'port'], value='22', replace=True)
-    config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
-    config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
-    config.set_tag(['interfaces', 'ethernet'])
-    config.set(['system', 'host-name'], value=hostname, replace=True)
+        set_config_cloud(config, hostname) 
 
     try:
         with open(cfg_file_name, 'w') as f:
