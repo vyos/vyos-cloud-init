@@ -2,9 +2,11 @@
 #
 #    Copyright (C) 2009-2010 Canonical Ltd.
 #    Copyright (C) 2012 Hewlett-Packard Development Company, L.P.
+#    Copyright (C) 2019 Sentrium S.L.
 #
 #    Author: Scott Moser <scott.moser@canonical.com>
 #    Author: Juerg Haefliger <juerg.haefliger@hp.com>
+#    Author: Kim Hagen <kim@sentrium.io>
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License version 3, as
@@ -48,10 +50,13 @@ def set_pass_login(config, user, password, encrypted_pass):
     config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)
 
 
-def set_ssh_login(config, user, key_string, key_x):
+def set_ssh_login(config, log, user, key_string, key_x):
     key_type = None
     key_data = None
     key_name = None
+
+    if key_string  == '':
+        return
 
     key_parts = key_string.split(None)
 
@@ -64,11 +69,11 @@ def set_ssh_login(config, user, key_string, key_x):
 
     if not key_type:
         util.logexc(log, 'Key type not defined, wrong ssh key format.')
-        raise VyosError('Key type not defined, wrong ssh key format.')
+        return
 
     if not key_data:
         util.logexc(log, 'Key base64 not defined, wrong ssh key format.')
-        raise VyosError('Key base64 not defined, wrong ssh key format.')
+        return
 
     if len(key_parts) > 2:
         if key_parts[2] != key_type or key_parts[2] != key_data:
@@ -98,8 +103,8 @@ def set_config_ovf(config, hostname, metadata):
     ip_0 = metadata['ip0'] 
     mask_0 = metadata['netmask0']
     gateway = metadata['gateway']
-    DNS = list(metadata['DNS'].replace(" ", "").split(","))
-    NTP = list(metadata['NTP'].replace(" ", "").split(","))
+    DNS = list(metadata['DNS'].replace(' ', '').split(','))
+    NTP = list(metadata['NTP'].replace(' ', '').split(','))
 
     if ip_0 != '' and mask_0 != '' and gateway != '': 
         cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
@@ -114,12 +119,12 @@ def set_config_ovf(config, hostname, metadata):
         config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
         config.set_tag(['interfaces', 'ethernet'])
 
-    DNS = [ server for server in DNS if server != "" ]
+    DNS = [ server for server in DNS if server != '' ]
     if DNS:
         for server in DNS:
             config.set(['system', 'name-server'], value=server, replace=False)
 
-    NTP = [ server for server in NTP if server != "" ]
+    NTP = [ server for server in NTP if server != '' ]
     if NTP:
         for server in NTP:
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
@@ -158,37 +163,37 @@ def handle(name, cfg, cloud, log, _args):
 
             vyos_keys = metadata['public-keys']
             for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, key_x)
+                set_ssh_login(config, log, user, ssh_key, key_x)
                 key_x = key_x + 1
         set_config_cloud(config, hostname) 
     elif 'OVF' in str(cloud.datasource):
         for user in users:
-            password = util.get_cfg_option_str(cfg, "password", None)
-            if password:
+            password = util.get_cfg_option_str(cfg, 'password', None)
+            if password and password != '':
                 set_pass_login(config, user, password, encrypted_pass)
 
             vyos_keys = cloud.get_public_ssh_keys() or []
-            if "ssh_authorized_keys" in cfg:
-                cfgkeys = cfg["ssh_authorized_keys"]
+            if 'ssh_authorized_keys' in cfg:
+                cfgkeys = cfg['ssh_authorized_keys']
                 vyos_keys.extend(cfgkeys)
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, key_x)
+                set_ssh_login(config, log, user, ssh_key, key_x)
                 key_x = key_x + 1
         set_config_ovf(config, hostname, metadata)
     else:        
         for user in users:
-            password = util.get_cfg_option_str(cfg, "passwd", None)
+            password = util.get_cfg_option_str(cfg, 'passwd', None)
             if password:
                 set_pass_login(config, user, password, encrypted_pass)
 
             vyos_keys = cloud.get_public_ssh_keys() or []
-            if "ssh_authorized_keys" in cfg:
-                cfgkeys = cfg["ssh_authorized_keys"]
+            if 'ssh_authorized_keys' in cfg:
+                cfgkeys = cfg['ssh_authorized_keys']
                 vyos_keys.extend(cfgkeys)
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, key_x)
+                set_ssh_login(config, log, user, ssh_key, key_x)
                 key_x = key_x + 1
         set_config_cloud(config, hostname) 
 
