@@ -132,7 +132,9 @@ def set_config_ovf(config, hostname, metadata):
 
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
-    config.set(['system', 'host-name'], value=hostname, replace=True)
+    
+    if hostname != '':
+        config.set(['system', 'host-name'], value=hostname, replace=True)
 
 
 def handle(name, cfg, cloud, log, _args):
