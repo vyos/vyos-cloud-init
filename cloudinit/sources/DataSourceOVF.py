@@ -103,7 +103,8 @@ class DataSourceOVF(sources.DataSource):
                 plugin = "libdeployPkgPlugin.so"
                 deployPkgPluginPath = None
                 for path in search_paths:
-                    deployPkgPluginPath = search_file(path, plugin)
+                    # Ignore deployPkgPluginPath for now.
+                    #deployPkgPluginPath = search_file(path, plugin)
                     if deployPkgPluginPath:
                         LOG.debug("Found the customization plugin at %s",
                                   deployPkgPluginPath)
