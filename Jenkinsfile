@@ -16,6 +16,8 @@ pipeline {
             sh '''#!/bin/bash
 git clone --single-branch --branch $GIT_BRANCH $GIT_URL $BUILD_NUMBER
 cd $BUILD_NUMBER
+echo "deb http://archive.debian.org/debian/ jessie-backports main" \
+| sudo tee /etc/apt/sources.list.d/jessie-backports.list
 sudo apt-get -o Acquire::Check-Valid-Until=false update
 sudo mk-build-deps -i -r -t \'apt-get -y\' debian/control
 dpkg-buildpackage -b -us -uc -tc
@@ -36,6 +38,8 @@ mv ../*.deb /tmp/$GIT_BRANCH/packages/'''
             sh '''#!/bin/bash
 git clone --single-branch --branch $GIT_BRANCH $GIT_URL $BUILD_NUMBER
 cd $BUILD_NUMBER
+echo "deb http://archive.debian.org/debian/ jessie-backports main" \
+| sudo tee /etc/apt/sources.list.d/jessie-backports.list
 sudo apt-get -o Acquire::Check-Valid-Until=false update
 sudo mk-build-deps -i -r -t \'apt-get -y\' debian/control
 dpkg-buildpackage -b -us -uc -tc
@@ -56,6 +60,8 @@ mv ../*.deb /tmp/$GIT_BRANCH/packages/'''
             sh '''#!/bin/bash
 git clone --single-branch --branch $GIT_BRANCH $GIT_URL $BUILD_NUMBER
 cd $BUILD_NUMBER
+echo "deb http://archive.debian.org/debian/ jessie-backports main" \
+| sudo tee /etc/apt/sources.list.d/jessie-backports.list
 sudo apt-get -o Acquire::Check-Valid-Until=false update
 sudo mk-build-deps -i -r -t \'apt-get -y\' debian/control
 dpkg-buildpackage -b -us -uc -tc
