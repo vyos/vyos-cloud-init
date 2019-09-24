@@ -243,6 +243,7 @@ def handle(name, cfg, cloud, log, _args):
                 set_ssh_login(config, log, user, ssh_key, key_x)
                 key_x = key_x + 1
     else:
+        encrypted_pass = False
         for user in users:
             password = util.get_cfg_option_str(cfg, 'passwd', None)
 
