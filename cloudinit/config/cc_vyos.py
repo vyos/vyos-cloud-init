@@ -273,6 +273,7 @@ def handle(name, cfg, cloud, log, _args):
 
     if 'OVF' in dc.dsname:
         set_config_ovf(config, hostname, metadata)
+        key_y = 1
     elif netcfg:
         for interface in netcfg['config']: 
             if interface['type'] == 'physical':
