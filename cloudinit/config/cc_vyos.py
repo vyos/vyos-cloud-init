@@ -101,6 +101,8 @@ def set_config_ovf(config, hostname, metadata):
     DNS = list(metadata['DNS'].replace(' ', '').split(','))
     NTP = list(metadata['NTP'].replace(' ', '').split(','))
     APIKEY = metadata['APIKEY']
+    APIPORT = metadata['APIPORT']
+    APIDEBUG = metadata['APIDEBUG']
 
     if ip_0 != '' and mask_0 != '' and gateway != '': 
         cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
@@ -129,6 +131,13 @@ def set_config_ovf(config, hostname, metadata):
     if APIKEY != '':
         config.set(['service', 'https', 'api', 'keys', 'id', 'cloud-init', 'key'], value=APIKEY, replace=True)
         config.set_tag(['service', 'https', 'api', 'keys', 'id'])
+
+    if APIDEBUG != 'False' and APIKEY != '':
+        config.set(['service', 'https', 'api', 'debug'], replace=True)
+
+    if APIPORT != '' and APIKEY != '':
+        config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=APIPORT, replace=True)
+        config.set_tag(['service', 'https', 'listen-address'])
 
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
