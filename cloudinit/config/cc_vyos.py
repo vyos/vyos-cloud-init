@@ -104,7 +104,7 @@ def set_config_ovf(config, hostname, metadata):
     APIPORT = metadata['APIPORT']
     APIDEBUG = metadata['APIDEBUG']
 
-    if ip_0 != '' and mask_0 != '' and gateway != '': 
+    if ip_0 and ip_0 != 'null' and mask_0 and mask_0 != 'null' and gateway and gateway != 'null': 
         cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
         ipcidr = ip_0 + '/' + cidr
 
