@@ -104,7 +104,7 @@ def set_config_ovf(config, hostname, metadata):
     APIPORT = metadata['APIPORT']
     APIDEBUG = metadata['APIDEBUG']
 
-    if ip_0 != '' and mask_0 != '' and gateway != '': 
+    if ip_0 and ip_0 != 'null' and mask_0 and mask_0 != 'null' and gateway and gateway != 'null': 
         cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
         ipcidr = ip_0 + '/' + cidr
 
@@ -117,33 +117,35 @@ def set_config_ovf(config, hostname, metadata):
         config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
         config.set_tag(['interfaces', 'ethernet'])
 
-    DNS = [ server for server in DNS if server != '' ]
+    DNS = [server for server in DNS if server and server != 'null']
     if DNS:
         for server in DNS:
             config.set(['system', 'name-server'], value=server, replace=False)
 
-    NTP = [ server for server in NTP if server != '' ]
+    NTP = [server for server in NTP if server and server != 'null']
     if NTP:
         for server in NTP:
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
         config.set_tag(['system', 'ntp', 'server'])
 
-    if APIKEY != '':
+    if APIKEY and APIKEY != 'null':
         config.set(['service', 'https', 'api', 'keys', 'id', 'cloud-init', 'key'], value=APIKEY, replace=True)
         config.set_tag(['service', 'https', 'api', 'keys', 'id'])
 
-    if APIDEBUG != 'False' and APIKEY != '':
+    if APIDEBUG != 'False' and APIKEY and APIKEY != 'null':
         config.set(['service', 'https', 'api', 'debug'], replace=True)
 
-    if APIPORT != '' and APIKEY != '':
+    if APIPORT and APIPORT != 'null' and APIKEY and APIKEY != 'null':
         config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=APIPORT, replace=True)
         config.set_tag(['service', 'https', 'listen-address'])
 
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
     
-    if hostname != '':
+    if hostname and hostname != 'null':
         config.set(['system', 'host-name'], value=hostname, replace=True)
+    else:
+        config.set(['system', 'host-name'], value='vyos', replace=True)
 
 
 def set_config_interfaces(config, interface):
