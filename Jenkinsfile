@@ -19,6 +19,7 @@ cd $BUILD_NUMBER
 echo "deb http://archive.debian.org/debian/ jessie-backports main" \
 | sudo tee /etc/apt/sources.list.d/jessie-backports.list
 sudo apt-get -o Acquire::Check-Valid-Until=false update
+sudo apt-get -y install equivs
 sudo mk-build-deps -i -r -t \'apt-get --no-install-recommends -yq\' debian/control
 dpkg-buildpackage -b -us -uc -tc
 mkdir -p /tmp/$GIT_BRANCH/packages/script
