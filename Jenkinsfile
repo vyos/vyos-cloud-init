@@ -107,6 +107,16 @@ pipeline {
                 }
             }
         }
+        stage('Install missed dependencies') {
+            steps {
+                script {
+                    dir('build') {
+                        sh 'sudo apt update'
+                        sh 'sudo apt install -y python3-jsonschema python3-contextlib2 cloud-utils'
+                    }
+                }
+            }
+        }
         stage('Build') {
             steps {
                 script {
@@ -114,7 +124,7 @@ pipeline {
                         def commitId = sh(returnStdout: true, script: 'git rev-parse --short=11 HEAD').trim()
                         currentBuild.description = sprintf('Git SHA1: %s', commitId[-11..-1])
 
-                        sh 'dpkg-buildpackage -b -us -uc -tc'
+                        sh './packages/bddeb'
                     }
                 }
             }
@@ -128,7 +138,7 @@ pipeline {
             script {
                 // archive *.deb artifact on custom builds, deploy to repo otherwise
                 if ( isCustomBuild()) {
-                    archiveArtifacts artifacts: '*.deb', fingerprint: true
+                    archiveArtifacts artifacts: 'cloud-init_*_all.deb', fingerprint: true
                 } else {
                     // publish build result, using SSH-dev.packages.vyos.net Jenkins Credentials
                     sshagent(['SSH-dev.packages.vyos.net']) {
@@ -148,7 +158,7 @@ pipeline {
 
                         echo "Uploading package(s) and updating package(s) in the repository ..."
 
-                        files = findFiles(glob: '*.deb')
+                        files = findFiles(glob: 'cloud-init_*_all.deb')
                         files.each { PACKAGE ->
                             def ARCH = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Architecture").trim()
                             def SUBSTRING = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Package").trim()

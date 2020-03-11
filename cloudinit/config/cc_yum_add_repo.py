@@ -30,13 +30,9 @@ entry, the config entry will be skipped.
             # any repository configuration options (see man yum.conf)
 """
 
+import io
 import os
-
-try:
-    from configparser import ConfigParser
-except ImportError:
-    from ConfigParser import ConfigParser
-import six
+from configparser import ConfigParser
 
 from cloudinit import util
 
@@ -57,7 +53,7 @@ def _format_repo_value(val):
         # Can handle 'lists' in certain cases
         # See: https://linux.die.net/man/5/yum.conf
         return "\n".join([_format_repo_value(v) for v in val])
-    if not isinstance(val, six.string_types):
+    if not isinstance(val, str):
         return str(val)
     return val
 
@@ -72,7 +68,7 @@ def _format_repository_config(repo_id, repo_config):
         # For now assume that people using this know
         # the format of yum and don't verify keys/values further
         to_be.set(repo_id, k, _format_repo_value(v))
-    to_be_stream = six.StringIO()
+    to_be_stream = io.StringIO()
     to_be.write(to_be_stream)
     to_be_stream.seek(0)
     lines = to_be_stream.readlines()
@@ -113,16 +109,16 @@ def handle(name, cfg, _cloud, log, _args):
         missing_required = 0
         for req_field in ['baseurl']:
             if req_field not in repo_config:
-                log.warn(("Repository %s does not contain a %s"
-                          " configuration 'required' entry"),
-                         repo_id, req_field)
+                log.warning(("Repository %s does not contain a %s"
+                             " configuration 'required' entry"),
+                            repo_id, req_field)
                 missing_required += 1
         if not missing_required:
             repo_configs[canon_repo_id] = repo_config
             repo_locations[canon_repo_id] = repo_fn_pth
         else:
-            log.warn("Repository %s is missing %s required fields, skipping!",
-                     repo_id, missing_required)
+            log.warning("Repository %s is missing %s required fields, "
+                        "skipping!", repo_id, missing_required)
     for (c_repo_id, path) in repo_locations.items():
         repo_blob = _format_repository_config(c_repo_id,
                                               repo_configs.get(c_repo_id))

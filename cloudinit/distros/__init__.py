@@ -9,13 +9,11 @@
 #
 # This file is part of cloud-init. See LICENSE file for license information.
 
-import six
-from six import StringIO
-
 import abc
 import os
 import re
 import stat
+from io import StringIO
 
 from cloudinit import importer
 from cloudinit import log as logging
@@ -36,7 +34,7 @@ ALL_DISTROS = 'all'
 
 OSFAMILIES = {
     'debian': ['debian', 'ubuntu'],
-    'redhat': ['centos', 'fedora', 'rhel'],
+    'redhat': ['amazon', 'centos', 'fedora', 'rhel'],
     'gentoo': ['gentoo'],
     'freebsd': ['freebsd'],
     'suse': ['opensuse', 'sles'],
@@ -53,8 +51,7 @@ _EC2_AZ_RE = re.compile('^[a-z][a-z]-(?:[a-z]+-)+[0-9][a-z]$')
 PREFERRED_NTP_CLIENTS = ['chrony', 'systemd-timesyncd', 'ntp', 'ntpdate']
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Distro(object):
+class Distro(metaclass=abc.ABCMeta):
 
     usr_lib_exec = "/usr/lib"
     hosts_fn = "/etc/hosts"
@@ -145,7 +142,7 @@ class Distro(object):
         # Write it out
 
         # pylint: disable=assignment-from-no-return
-        # We have implementations in arch, freebsd and gentoo still
+        # We have implementations in arch and gentoo still
         dev_names = self._write_network(settings)
         # pylint: enable=assignment-from-no-return
         # Now try to bring them up
@@ -385,7 +382,7 @@ class Distro(object):
         Add a user to the system using standard GNU tools
         """
         # XXX need to make add_user idempotent somehow as we
-        # still want to add groups or modify ssh keys on pre-existing
+        # still want to add groups or modify SSH keys on pre-existing
         # users in the image.
         if util.is_user(name):
             LOG.info("User %s already exists, skipping.", name)
@@ -396,16 +393,16 @@ class Distro(object):
         else:
             create_groups = True
 
-        adduser_cmd = ['useradd', name]
-        log_adduser_cmd = ['useradd', name]
+        useradd_cmd = ['useradd', name]
+        log_useradd_cmd = ['useradd', name]
         if util.system_is_snappy():
-            adduser_cmd.append('--extrausers')
-            log_adduser_cmd.append('--extrausers')
+            useradd_cmd.append('--extrausers')
+            log_useradd_cmd.append('--extrausers')
 
         # Since we are creating users, we want to carefully validate the
         # inputs. If something goes wrong, we can end up with a system
         # that nobody can login to.
-        adduser_opts = {
+        useradd_opts = {
             "gecos": '--comment',
             "homedir": '--home',
             "primary_group": '--gid',
@@ -418,7 +415,7 @@ class Distro(object):
             "selinux_user": '--selinux-user',
         }
 
-        adduser_flags = {
+        useradd_flags = {
             "no_user_group": '--no-user-group',
             "system": '--system',
             "no_log_init": '--no-log-init',
@@ -429,7 +426,7 @@ class Distro(object):
         # support kwargs having groups=[list] or groups="g1,g2"
         groups = kwargs.get('groups')
         if groups:
-            if isinstance(groups, six.string_types):
+            if isinstance(groups, str):
                 groups = groups.split(",")
 
             # remove any white spaces in group names, most likely
@@ -453,32 +450,32 @@ class Distro(object):
         # Check the values and create the command
         for key, val in sorted(kwargs.items()):
 
-            if key in adduser_opts and val and isinstance(val, str):
-                adduser_cmd.extend([adduser_opts[key], val])
+            if key in useradd_opts and val and isinstance(val, str):
+                useradd_cmd.extend([useradd_opts[key], val])
 
                 # Redact certain fields from the logs
                 if key in redact_opts:
-                    log_adduser_cmd.extend([adduser_opts[key], 'REDACTED'])
+                    log_useradd_cmd.extend([useradd_opts[key], 'REDACTED'])
                 else:
-                    log_adduser_cmd.extend([adduser_opts[key], val])
+                    log_useradd_cmd.extend([useradd_opts[key], val])
 
-            elif key in adduser_flags and val:
-                adduser_cmd.append(adduser_flags[key])
-                log_adduser_cmd.append(adduser_flags[key])
+            elif key in useradd_flags and val:
+                useradd_cmd.append(useradd_flags[key])
+                log_useradd_cmd.append(useradd_flags[key])
 
         # Don't create the home directory if directed so or if the user is a
         # system user
         if kwargs.get('no_create_home') or kwargs.get('system'):
-            adduser_cmd.append('-M')
-            log_adduser_cmd.append('-M')
+            useradd_cmd.append('-M')
+            log_useradd_cmd.append('-M')
         else:
-            adduser_cmd.append('-m')
-            log_adduser_cmd.append('-m')
+            useradd_cmd.append('-m')
+            log_useradd_cmd.append('-m')
 
         # Run the command
         LOG.debug("Adding user %s", name)
         try:
-            util.subp(adduser_cmd, logstring=log_adduser_cmd)
+            util.subp(useradd_cmd, logstring=log_useradd_cmd)
         except Exception as e:
             util.logexc(LOG, "Failed to create user %s", name)
             raise e
@@ -490,15 +487,15 @@ class Distro(object):
 
         snapuser = kwargs.get('snapuser')
         known = kwargs.get('known', False)
-        adduser_cmd = ["snap", "create-user", "--sudoer", "--json"]
+        create_user_cmd = ["snap", "create-user", "--sudoer", "--json"]
         if known:
-            adduser_cmd.append("--known")
-        adduser_cmd.append(snapuser)
+            create_user_cmd.append("--known")
+        create_user_cmd.append(snapuser)
 
         # Run the command
         LOG.debug("Adding snap user %s", name)
         try:
-            (out, err) = util.subp(adduser_cmd, logstring=adduser_cmd,
+            (out, err) = util.subp(create_user_cmd, logstring=create_user_cmd,
                                    capture=True)
             LOG.debug("snap create-user returned: %s:%s", out, err)
             jobj = util.load_json(out)
@@ -544,7 +541,7 @@ class Distro(object):
         if 'ssh_authorized_keys' in kwargs:
             # Try to handle this in a smart manner.
             keys = kwargs['ssh_authorized_keys']
-            if isinstance(keys, six.string_types):
+            if isinstance(keys, str):
                 keys = [keys]
             elif isinstance(keys, dict):
                 keys = list(keys.values())
@@ -561,7 +558,7 @@ class Distro(object):
             cloud_keys = kwargs.get('cloud_public_ssh_keys', [])
             if not cloud_keys:
                 LOG.warning(
-                    'Unable to disable ssh logins for %s given'
+                    'Unable to disable SSH logins for %s given'
                     ' ssh_redirect_user: %s. No cloud public-keys present.',
                     name, kwargs['ssh_redirect_user'])
             else:
@@ -577,13 +574,25 @@ class Distro(object):
         """
         Lock the password of a user, i.e., disable password logins
         """
+        # passwd must use short '-l' due to SLES11 lacking long form '--lock'
+        lock_tools = (['passwd', '-l', name], ['usermod', '--lock', name])
         try:
-            # Need to use the short option name '-l' instead of '--lock'
-            # (which would be more descriptive) since SLES 11 doesn't know
-            # about long names.
-            util.subp(['passwd', '-l', name])
+            cmd = next(l for l in lock_tools if util.which(l[0]))
+        except StopIteration:
+            raise RuntimeError((
+                "Unable to lock user account '%s'. No tools available. "
+                "  Tried: %s.") % (name, [c[0] for c in lock_tools]))
+        try:
+            util.subp(cmd)
         except Exception as e:
             util.logexc(LOG, 'Failed to disable password for user %s', name)
+            raise e
+
+    def expire_passwd(self, user):
+        try:
+            util.subp(['passwd', '--expire', user])
+        except Exception as e:
+            util.logexc(LOG, "Failed to set 'expire' for %s", user)
             raise e
 
     def set_passwd(self, user, passwd, hashed=False):
@@ -656,7 +665,7 @@ class Distro(object):
         if isinstance(rules, (list, tuple)):
             for rule in rules:
                 lines.append("%s %s" % (user, rule))
-        elif isinstance(rules, six.string_types):
+        elif isinstance(rules, str):
             lines.append("%s %s" % (user, rules))
         else:
             msg = "Can not create sudoers rule addition with type %r"

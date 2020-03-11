@@ -10,7 +10,6 @@
 
 import contextlib
 import copy as obj_copy
-import ctypes
 import email
 import glob
 import grp
@@ -38,7 +37,6 @@ from base64 import b64decode, b64encode
 from six.moves.urllib import parse as urlparse
 
 import six
-import yaml
 
 from cloudinit import importer
 from cloudinit import log as logging
@@ -52,9 +50,14 @@ from cloudinit import version
 from cloudinit.settings import (CFG_BUILTIN)
 
 try:
-    string_types = (basestring,)
-except NameError:
-    string_types = (str,)
+    from functools import lru_cache
+except ImportError:
+    def lru_cache():
+        """pass-thru replace for Python3's lru_cache()"""
+        def wrapper(f):
+            return f
+        return wrapper
+
 
 _DNS_REDIRECT_IP = None
 LOG = logging.getLogger(__name__)
@@ -74,19 +77,21 @@ CONTAINER_TESTS = (['systemd-detect-virt', '--quiet', '--container'],
                    ['running-in-container'],
                    ['lxc-is-container'])
 
-PROC_CMDLINE = None
 
-_LSB_RELEASE = {}
-PY26 = sys.version_info[0:2] == (2, 6)
+@lru_cache()
+def get_dpkg_architecture(target=None):
+    """Return the sanitized string output by `dpkg --print-architecture`.
 
-
-def get_architecture(target=None):
+    N.B. This function is wrapped in functools.lru_cache, so repeated calls
+    won't shell out every time.
+    """
     out, _ = subp(['dpkg', '--print-architecture'], capture=True,
                   target=target)
     return out.strip()
 
 
-def _lsb_release(target=None):
+@lru_cache()
+def lsb_release(target=None):
     fmap = {'Codename': 'codename', 'Description': 'description',
             'Distributor ID': 'id', 'Release': 'release'}
 
@@ -109,23 +114,11 @@ def _lsb_release(target=None):
     return data
 
 
-def lsb_release(target=None):
-    if target_path(target) != "/":
-        # do not use or update cache if target is provided
-        return _lsb_release(target)
-
-    global _LSB_RELEASE
-    if not _LSB_RELEASE:
-        data = _lsb_release()
-        _LSB_RELEASE.update(data)
-    return _LSB_RELEASE
-
-
 def target_path(target, path=None):
     # return 'path' inside target, accepting target as None
     if target in (None, ""):
         target = "/"
-    elif not isinstance(target, string_types):
+    elif not isinstance(target, six.string_types):
         raise ValueError("Unexpected input for target: %s" % target)
     else:
         target = os.path.abspath(target)
@@ -404,9 +397,10 @@ def translate_bool(val, addons=None):
 
 
 def rand_str(strlen=32, select_from=None):
+    r = random.SystemRandom()
     if not select_from:
         select_from = string.ascii_letters + string.digits
-    return "".join([random.choice(select_from) for _x in range(0, strlen)])
+    return "".join([r.choice(select_from) for _x in range(0, strlen)])
 
 
 def rand_dict_key(dictionary, postfix=None):
@@ -553,6 +547,7 @@ def is_ipv4(instr):
     return len(toks) == 4
 
 
+@lru_cache()
 def is_FreeBSD():
     return system_info()['variant'] == "freebsd"
 
@@ -602,6 +597,7 @@ def _parse_redhat_release(release_file=None):
     return {}
 
 
+@lru_cache()
 def get_linux_distro():
     distro_name = ''
     distro_version = ''
@@ -629,11 +625,15 @@ def get_linux_distro():
                     flavor = match.groupdict()['codename']
         if distro_name == 'rhel':
             distro_name = 'redhat'
+    elif os.path.exists('/bin/freebsd-version'):
+        distro_name = 'freebsd'
+        distro_version, _ = subp(['uname', '-r'])
+        distro_version = distro_version.strip()
     else:
         dist = ('', '', '')
         try:
-            # Will be removed in 3.7
-            dist = platform.dist()  # pylint: disable=W1505
+            # Was removed in 3.8
+            dist = platform.dist()  # pylint: disable=W1505,E1101
         except Exception:
             pass
         finally:
@@ -649,6 +649,7 @@ def get_linux_distro():
     return (distro_name, distro_version, flavor)
 
 
+@lru_cache()
 def system_info():
     info = {
         'platform': platform.platform(),
@@ -662,7 +663,8 @@ def system_info():
     var = 'unknown'
     if system == "linux":
         linux_dist = info['dist'][0].lower()
-        if linux_dist in ('centos', 'debian', 'fedora', 'rhel', 'suse'):
+        if linux_dist in (
+                'arch', 'centos', 'debian', 'fedora', 'rhel', 'suse'):
             var = linux_dist
         elif linux_dist in ('ubuntu', 'linuxmint', 'mint'):
             var = 'ubuntu'
@@ -709,6 +711,21 @@ def get_cfg_option_list(yobj, key, default=None):
 # get a cfg entry by its path array
 # for f['a']['b']: get_cfg_by_path(mycfg,('a','b'))
 def get_cfg_by_path(yobj, keyp, default=None):
+    """Return the value of the item at path C{keyp} in C{yobj}.
+
+    example:
+      get_cfg_by_path({'a': {'b': {'num': 4}}}, 'a/b/num') == 4
+      get_cfg_by_path({'a': {'b': {'num': 4}}}, 'c/d') == None
+
+    @param yobj: A dictionary.
+    @param keyp: A path inside yobj.  it can be a '/' delimited string,
+                 or an iterable.
+    @param default: The default to return if the path does not exist.
+    @return: The value of the item at keyp."
+        is not found."""
+
+    if isinstance(keyp, six.string_types):
+        keyp = keyp.split("/")
     cur = yobj
     for tok in keyp:
         if tok not in cur:
@@ -948,7 +965,7 @@ def load_yaml(blob, default=None, allowed=(dict,)):
                              " but got %s instead") %
                             (allowed, type_utils.obj_name(converted)))
         loaded = converted
-    except (yaml.YAMLError, TypeError, ValueError) as e:
+    except (safeyaml.YAMLError, TypeError, ValueError) as e:
         msg = 'Failed loading yaml blob'
         mark = None
         if hasattr(e, 'context_mark') and getattr(e, 'context_mark'):
@@ -966,13 +983,6 @@ def load_yaml(blob, default=None, allowed=(dict,)):
 
 
 def read_seeded(base="", ext="", timeout=5, retries=10, file_retries=0):
-    if base.startswith("/"):
-        base = "file://%s" % base
-
-    # default retries for file is 0. for network is 10
-    if base.startswith("file://"):
-        retries = file_retries
-
     if base.find("%s") >= 0:
         ud_url = base % ("user-data" + ext)
         md_url = base % ("meta-data" + ext)
@@ -980,14 +990,14 @@ def read_seeded(base="", ext="", timeout=5, retries=10, file_retries=0):
         ud_url = "%s%s%s" % (base, "user-data", ext)
         md_url = "%s%s%s" % (base, "meta-data", ext)
 
-    md_resp = url_helper.read_file_or_url(md_url, timeout, retries,
-                                          file_retries)
+    md_resp = url_helper.read_file_or_url(md_url, timeout=timeout,
+                                          retries=retries)
     md = None
     if md_resp.ok():
         md = load_yaml(decode_binary(md_resp.contents), default={})
 
-    ud_resp = url_helper.read_file_or_url(ud_url, timeout, retries,
-                                          file_retries)
+    ud_resp = url_helper.read_file_or_url(ud_url, timeout=timeout,
+                                          retries=retries)
     ud = None
     if ud_resp.ok():
         ud = ud_resp.contents
@@ -1362,14 +1372,8 @@ def load_file(fname, read_cb=None, quiet=False, decode=True):
         return contents
 
 
-def get_cmdline():
-    if 'DEBUG_PROC_CMDLINE' in os.environ:
-        return os.environ["DEBUG_PROC_CMDLINE"]
-
-    global PROC_CMDLINE
-    if PROC_CMDLINE is not None:
-        return PROC_CMDLINE
-
+@lru_cache()
+def _get_cmdline():
     if is_container():
         try:
             contents = load_file("/proc/1/cmdline")
@@ -1384,8 +1388,14 @@ def get_cmdline():
         except Exception:
             cmdline = ""
 
-    PROC_CMDLINE = cmdline
     return cmdline
+
+
+def get_cmdline():
+    if 'DEBUG_PROC_CMDLINE' in os.environ:
+        return os.environ["DEBUG_PROC_CMDLINE"]
+
+    return _get_cmdline()
 
 
 def pipe_in_out(in_fh, out_fh, chunk_size=1024, chunk_cb=None):
@@ -1590,20 +1600,33 @@ def json_serialize_default(_obj):
         return 'Warning: redacted unserializable type {0}'.format(type(_obj))
 
 
+def json_preserialize_binary(data):
+    """Preserialize any discovered binary values to avoid json.dumps issues.
+
+    Used only on python 2.7 where default type handling is not honored for
+    failure to encode binary data. LP: #1801364.
+    TODO(Drop this function when py2.7 support is dropped from cloud-init)
+    """
+    data = obj_copy.deepcopy(data)
+    for key, value in data.items():
+        if isinstance(value, (dict)):
+            data[key] = json_preserialize_binary(value)
+        if isinstance(value, bytes):
+            data[key] = 'ci-b64:{0}'.format(b64e(value))
+    return data
+
+
 def json_dumps(data):
     """Return data in nicely formatted json."""
-    return json.dumps(data, indent=1, sort_keys=True,
-                      separators=(',', ': '), default=json_serialize_default)
-
-
-def yaml_dumps(obj, explicit_start=True, explicit_end=True):
-    """Return data in nicely formatted yaml."""
-    return yaml.safe_dump(obj,
-                          line_break="\n",
-                          indent=4,
-                          explicit_start=explicit_start,
-                          explicit_end=explicit_end,
-                          default_flow_style=False)
+    try:
+        return json.dumps(
+            data, indent=1, sort_keys=True, separators=(',', ': '),
+            default=json_serialize_default)
+    except UnicodeDecodeError:
+        if sys.version_info[:2] == (2, 7):
+            data = json_preserialize_binary(data)
+            return json.dumps(data)
+        raise
 
 
 def ensure_dir(path, mode=None):
@@ -1667,7 +1690,7 @@ def mounts():
     return mounted
 
 
-def mount_cb(device, callback, data=None, rw=False, mtype=None, sync=True,
+def mount_cb(device, callback, data=None, mtype=None,
              update_env_for_mount=None):
     """
     Mount the device, call method 'callback' passing the directory
@@ -1714,18 +1737,7 @@ def mount_cb(device, callback, data=None, rw=False, mtype=None, sync=True,
             for mtype in mtypes:
                 mountpoint = None
                 try:
-                    mountcmd = ['mount']
-                    mountopts = []
-                    if rw:
-                        mountopts.append('rw')
-                    else:
-                        mountopts.append('ro')
-                    if sync:
-                        # This seems like the safe approach to do
-                        # (ie where this is on by default)
-                        mountopts.append("sync")
-                    if mountopts:
-                        mountcmd.extend(["-o", ",".join(mountopts)])
+                    mountcmd = ['mount', '-o', 'ro']
                     if mtype:
                         mountcmd.extend(['-t', mtype])
                     mountcmd.append(device)
@@ -1792,6 +1804,33 @@ def time_rfc2822():
     return ts
 
 
+def boottime():
+    """Use sysctlbyname(3) via ctypes to find kern.boottime
+
+    kern.boottime is of type struct timeval. Here we create a
+    private class to easier unpack it.
+
+    @return boottime: float to be compatible with linux
+    """
+    import ctypes
+
+    NULL_BYTES = b"\x00"
+
+    class timeval(ctypes.Structure):
+        _fields_ = [
+            ("tv_sec", ctypes.c_int64),
+            ("tv_usec", ctypes.c_int64)
+        ]
+    libc = ctypes.CDLL('/lib/libc.so.7')
+    size = ctypes.c_size_t()
+    size.value = ctypes.sizeof(timeval)
+    buf = timeval()
+    if libc.sysctlbyname(b"kern.boottime" + NULL_BYTES, ctypes.byref(buf),
+                         ctypes.byref(size), None, 0) != -1:
+        return buf.tv_sec + buf.tv_usec / 1000000.0
+    raise RuntimeError("Unable to retrieve kern.boottime on this system")
+
+
 def uptime():
     uptime_str = '??'
     method = 'unknown'
@@ -1803,15 +1842,8 @@ def uptime():
                 uptime_str = contents.split()[0]
         else:
             method = 'ctypes'
-            libc = ctypes.CDLL('/lib/libc.so.7')
-            size = ctypes.c_size_t()
-            buf = ctypes.c_int()
-            size.value = ctypes.sizeof(buf)
-            libc.sysctlbyname("kern.boottime", ctypes.byref(buf),
-                              ctypes.byref(size), None, 0)
-            now = time.time()
-            bootup = buf.value
-            uptime_str = now - bootup
+            # This is the *BSD codepath
+            uptime_str = str(time.time() - boottime())
 
     except Exception:
         logexc(LOG, "Unable to read uptime using method: %s" % method)
@@ -2336,17 +2368,21 @@ def parse_mtab(path):
     return None
 
 
-def find_freebsd_part(label_part):
-    if label_part.startswith("/dev/label/"):
-        target_label = label_part[5:]
-        (label_part, _err) = subp(['glabel', 'status', '-s'])
-        for labels in label_part.split("\n"):
+def find_freebsd_part(fs):
+    splitted = fs.split('/')
+    if len(splitted) == 3:
+        return splitted[2]
+    elif splitted[2] in ['label', 'gpt', 'ufs']:
+        target_label = fs[5:]
+        (part, _err) = subp(['glabel', 'status', '-s'])
+        for labels in part.split("\n"):
             items = labels.split()
-            if len(items) > 0 and items[0].startswith(target_label):
-                label_part = items[2]
+            if len(items) > 0 and items[0] == target_label:
+                part = items[2]
                 break
-        label_part = str(label_part)
-    return label_part
+        return str(part)
+    else:
+        LOG.warning("Unexpected input in find_freebsd_part: %s", fs)
 
 
 def get_path_dev_freebsd(path, mnt_list):
@@ -2665,8 +2701,8 @@ def _call_dmidecode(key, dmidecode_path):
     try:
         cmd = [dmidecode_path, "--string", key]
         (result, _err) = subp(cmd)
-        LOG.debug("dmidecode returned '%s' for '%s'", result, key)
         result = result.strip()
+        LOG.debug("dmidecode returned '%s' for '%s'", result, key)
         if result.replace(".", "") == "":
             return ""
         return result
@@ -2817,9 +2853,6 @@ def load_shell_content(content, add_empty=False, empty_val=None):
        variables.  Set their value to empty_val."""
 
     def _shlex_split(blob):
-        if PY26 and isinstance(blob, six.text_type):
-            # Older versions don't support unicode input
-            blob = blob.encode("utf8")
         return shlex.split(blob, comments=True)
 
     data = {}
@@ -2875,5 +2908,21 @@ def udevadm_settle(exists=None, timeout=None):
 
     return subp(settle_cmd)
 
+
+def get_proc_ppid(pid):
+    """
+    Return the parent pid of a process.
+    """
+    ppid = 0
+    try:
+        contents = load_file("/proc/%s/stat" % pid, quiet=True)
+    except IOError as e:
+        LOG.warning('Failed to load /proc/%s/stat. %s', pid, e)
+    if contents:
+        parts = contents.split(" ", 4)
+        # man proc says
+        #  ppid %d     (4) The PID of the parent.
+        ppid = int(parts[3])
+    return ppid
 
 # vi: ts=4 expandtab

@@ -180,7 +180,6 @@ config entries. Legacy to new mappings are as follows:
 
 import os
 import re
-import six
 
 from cloudinit import log as logging
 from cloudinit import util
@@ -203,7 +202,7 @@ LOG = logging.getLogger(__name__)
 COMMENT_RE = re.compile(r'[ ]*[#]+[ ]*')
 HOST_PORT_RE = re.compile(
     r'^(?P<proto>[@]{0,2})'
-    r'(([[](?P<bracket_addr>[^\]]*)[\]])|(?P<addr>[^:]*))'
+    r'(([\[](?P<bracket_addr>[^\]]*)[\]])|(?P<addr>[^:]*))'
     r'([:](?P<port>[0-9]+))?$')
 
 
@@ -233,9 +232,9 @@ def load_config(cfg):
 
     fillup = (
         (KEYNAME_CONFIGS, [], list),
-        (KEYNAME_DIR, DEF_DIR, six.string_types),
-        (KEYNAME_FILENAME, DEF_FILENAME, six.string_types),
-        (KEYNAME_RELOAD, DEF_RELOAD, six.string_types + (list,)),
+        (KEYNAME_DIR, DEF_DIR, str),
+        (KEYNAME_FILENAME, DEF_FILENAME, str),
+        (KEYNAME_RELOAD, DEF_RELOAD, (str, list)),
         (KEYNAME_REMOTES, DEF_REMOTES, dict))
 
     for key, default, vtypes in fillup:
@@ -432,7 +431,7 @@ def handle(name, cfg, cloud, log, _args):
             systemd=cloud.distro.uses_systemd()),
     except util.ProcessExecutionError as e:
         restarted = False
-        log.warn("Failed to reload syslog", e)
+        log.warning("Failed to reload syslog", e)
 
     if restarted:
         # This only needs to run if we *actually* restarted

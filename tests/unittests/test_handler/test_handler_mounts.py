@@ -1,15 +1,11 @@
 # This file is part of cloud-init. See LICENSE file for license information.
 
 import os.path
+from unittest import mock
 
 from cloudinit.config import cc_mounts
 
 from cloudinit.tests import helpers as test_helpers
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
 
 
 class TestSanitizeDevname(test_helpers.FilesystemMockingTestCase):
@@ -154,7 +150,15 @@ class TestFstabHandling(test_helpers.FilesystemMockingTestCase):
                        return_value=True)
 
         self.add_patch('cloudinit.config.cc_mounts.util.subp',
-                       'mock_util_subp')
+                       'm_util_subp')
+
+        self.add_patch('cloudinit.config.cc_mounts.util.mounts',
+                       'mock_util_mounts',
+                       return_value={
+                           '/dev/sda1': {'fstype': 'ext4',
+                                         'mountpoint': '/',
+                                         'opts': 'rw,relatime,discard'
+                                         }})
 
         self.mock_cloud = mock.Mock()
         self.mock_log = mock.Mock()
@@ -172,6 +176,18 @@ class TestFstabHandling(test_helpers.FilesystemMockingTestCase):
             dev = None
 
         return dev
+
+    def test_swap_integrity(self):
+        '''Ensure that the swap file is correctly created and can
+        swapon successfully. Fixing the corner case of:
+        kernel: swapon: swapfile has holes'''
+
+        fstab = '/swap.img swap swap defaults 0 0\n'
+
+        with open(cc_mounts.FSTAB_PATH, 'w') as fd:
+            fd.write(fstab)
+        cc = {'swap': ['filename: /swap.img', 'size: 512', 'maxsize: 512']}
+        cc_mounts.handle(None, cc, self.mock_cloud, self.mock_log, [])
 
     def test_fstab_no_swap_device(self):
         '''Ensure that cloud-init adds a discovered swap partition
@@ -229,5 +245,25 @@ class TestFstabHandling(test_helpers.FilesystemMockingTestCase):
         with open(cc_mounts.FSTAB_PATH, 'r') as fd:
             fstab_new_content = fd.read()
             self.assertEqual(fstab_expected_content, fstab_new_content)
+
+    def test_no_change_fstab_sets_needs_mount_all(self):
+        '''verify unchanged fstab entries are mounted if not call mount -a'''
+        fstab_original_content = (
+            'LABEL=cloudimg-rootfs / ext4 defaults 0 0\n'
+            'LABEL=UEFI /boot/efi vfat defaults 0 0\n'
+            '/dev/vdb /mnt auto defaults,noexec,comment=cloudconfig 0 2\n'
+        )
+        fstab_expected_content = fstab_original_content
+        cc = {'mounts': [
+                 ['/dev/vdb', '/mnt', 'auto', 'defaults,noexec']]}
+        with open(cc_mounts.FSTAB_PATH, 'w') as fd:
+            fd.write(fstab_original_content)
+        with open(cc_mounts.FSTAB_PATH, 'r') as fd:
+            fstab_new_content = fd.read()
+            self.assertEqual(fstab_expected_content, fstab_new_content)
+        cc_mounts.handle(None, cc, self.mock_cloud, self.mock_log, [])
+        self.m_util_subp.assert_has_calls([
+            mock.call(['mount', '-a']),
+            mock.call(['systemctl', 'daemon-reload'])])
 
 # vi: ts=4 expandtab

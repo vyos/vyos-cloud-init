@@ -9,43 +9,23 @@
 """
 SSH
 ---
-**Summary:** configure ssh and ssh keys
+**Summary:** configure SSH and SSH keys (host and authorized)
 
-This module handles most configuration for ssh and ssh keys. Many images have
-default ssh keys, which can be removed using ``ssh_deletekeys``. Since removing
-default keys is usually the desired behavior this option is enabled by default.
+This module handles most configuration for SSH and both host and authorized SSH
+keys.
 
-Keys can be added using the ``ssh_keys`` configuration key. The argument to
-this config key should be a dictionary entries for the public and private keys
-of each desired key type. Entries in the ``ssh_keys`` config dict should
-have keys in the format ``<key type>_private`` and ``<key type>_public``, e.g.
-``rsa_private: <key>`` and ``rsa_public: <key>``. See below for supported key
-types. Not all key types have to be specified, ones left unspecified will not
-be used. If this config option is used, then no keys will be generated.
+Authorized Keys
+^^^^^^^^^^^^^^^
 
-.. note::
-    when specifying private keys in cloud-config, care should be taken to
-    ensure that the communication between the data source and the instance is
-    secure
+Authorized keys are a list of public SSH keys that are allowed to connect to a
+a user account on a system. They are stored in `.ssh/authorized_keys` in that
+account's home directory. Authorized keys for the default user defined in
+``users`` can be specified using ``ssh_authorized_keys``. Keys
+should be specified as a list of public keys.
 
 .. note::
-    to specify multiline private keys, use yaml multiline syntax
-
-If no keys are specified using ``ssh_keys``, then keys will be generated using
-``ssh-keygen``. By default one public/private pair of each supported key type
-will be generated. The key types to generate can be specified using the
-``ssh_genkeytypes`` config flag, which accepts a list of key types to use. For
-each key type for which this module has been instructed to create a keypair, if
-a key of the same type is already present on the system (i.e. if
-``ssh_deletekeys`` was false), no key will be generated.
-
-Supported key types for the ``ssh_keys`` and the ``ssh_genkeytypes`` config
-flags are:
-
-    - rsa
-    - dsa
-    - ecdsa
-    - ed25519
+    see the ``cc_set_passwords`` module documentation to enable/disable SSH
+    password authentication
 
 Root login can be enabled/disabled using the ``disable_root`` config key. Root
 login options can be manually specified with ``disable_root_opts``. If
@@ -55,13 +35,46 @@ root login is disabled, and root login opts are set to::
 
     no-port-forwarding,no-agent-forwarding,no-X11-forwarding
 
-Authorized keys for the default user/first user defined in ``users`` can be
-specified using `ssh_authorized_keys``. Keys should be specified as a list of
-public keys.
+Host Keys
+^^^^^^^^^
+
+Host keys are for authenticating a specific instance. Many images have default
+host SSH keys, which can be removed using ``ssh_deletekeys``. This prevents
+re-use of a private host key from an image on multiple machines. Since
+removing default host keys is usually the desired behavior this option is
+enabled by default.
+
+Host keys can be added using the ``ssh_keys`` configuration key. The argument
+to this config key should be a dictionary entries for the public and private
+keys of each desired key type. Entries in the ``ssh_keys`` config dict should
+have keys in the format ``<key type>_private`` and ``<key type>_public``,
+e.g. ``rsa_private: <key>`` and ``rsa_public: <key>``. See below for supported
+key types. Not all key types have to be specified, ones left unspecified will
+not be used. If this config option is used, then no keys will be generated.
 
 .. note::
-    see the ``cc_set_passwords`` module documentation to enable/disable ssh
-    password authentication
+    when specifying private host keys in cloud-config, care should be taken to
+    ensure that the communication between the data source and the instance is
+    secure
+
+.. note::
+    to specify multiline private host keys, use yaml multiline syntax
+
+If no host keys are specified using ``ssh_keys``, then keys will be generated
+using ``ssh-keygen``. By default one public/private pair of each supported
+host key type will be generated. The key types to generate can be specified
+using the ``ssh_genkeytypes`` config flag, which accepts a list of host key
+types to use. For each host key type for which this module has been instructed
+to create a keypair, if a key of the same type is already present on the
+system (i.e. if ``ssh_deletekeys`` was false), no key will be generated.
+
+Supported host key types for the ``ssh_keys`` and the ``ssh_genkeytypes``
+config flags are:
+
+    - rsa
+    - dsa
+    - ecdsa
+    - ed25519
 
 **Internal name:** ``cc_ssh``
 
@@ -91,6 +104,10 @@ public keys.
     ssh_authorized_keys:
         - ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAGEA3FSyQwBI6Z+nCSjUU ...
         - ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEA3I7VUf2l5gSn5uavROsc5HRDpZ ...
+    allow_public_ssh_keys: <true/false>
+    ssh_publish_hostkeys:
+        enabled: <true/false> (Defaults to true)
+        blacklist: <list of key types> (Defaults to [dsa])
 """
 
 import glob
@@ -104,6 +121,10 @@ from cloudinit import util
 
 GENERATE_KEY_NAMES = ['rsa', 'dsa', 'ecdsa', 'ed25519']
 KEY_FILE_TPL = '/etc/ssh/ssh_host_%s_key'
+PUBLISH_HOST_KEYS = True
+# Don't publish the dsa hostkey by default since OpenSSH recommends not using
+# it.
+HOST_KEY_PUBLISH_BLACKLIST = ['dsa']
 
 CONFIG_KEY_TO_FILE = {}
 PRIV_TO_PUB = {}
@@ -176,6 +197,23 @@ def handle(_name, cfg, cloud, log, _args):
                         util.logexc(log, "Failed generating key type %s to "
                                     "file %s", keytype, keyfile)
 
+    if "ssh_publish_hostkeys" in cfg:
+        host_key_blacklist = util.get_cfg_option_list(
+            cfg["ssh_publish_hostkeys"], "blacklist",
+            HOST_KEY_PUBLISH_BLACKLIST)
+        publish_hostkeys = util.get_cfg_option_bool(
+            cfg["ssh_publish_hostkeys"], "enabled", PUBLISH_HOST_KEYS)
+    else:
+        host_key_blacklist = HOST_KEY_PUBLISH_BLACKLIST
+        publish_hostkeys = PUBLISH_HOST_KEYS
+
+    if publish_hostkeys:
+        hostkeys = get_public_host_keys(blacklist=host_key_blacklist)
+        try:
+            cloud.datasource.publish_host_keys(hostkeys)
+        except Exception:
+            util.logexc(log, "Publishing host keys failed!")
+
     try:
         (users, _groups) = ug_util.normalize_users_groups(cfg, cloud.distro)
         (user, _user_config) = ug_util.extract_default(users)
@@ -183,14 +221,20 @@ def handle(_name, cfg, cloud, log, _args):
         disable_root_opts = util.get_cfg_option_str(cfg, "disable_root_opts",
                                                     ssh_util.DISABLE_USER_OPTS)
 
-        keys = cloud.get_public_ssh_keys() or []
+        keys = []
+        if util.get_cfg_option_bool(cfg, 'allow_public_ssh_keys', True):
+            keys = cloud.get_public_ssh_keys() or []
+        else:
+            log.debug('Skipping import of publish SSH keys per '
+                      'config setting: allow_public_ssh_keys=False')
+
         if "ssh_authorized_keys" in cfg:
             cfgkeys = cfg["ssh_authorized_keys"]
             keys.extend(cfgkeys)
 
         apply_credentials(keys, user, disable_root, disable_root_opts)
     except Exception:
-        util.logexc(log, "Applying ssh credentials failed!")
+        util.logexc(log, "Applying SSH credentials failed!")
 
 
 def apply_credentials(keys, user, disable_root, disable_root_opts):
@@ -208,5 +252,36 @@ def apply_credentials(keys, user, disable_root, disable_root_opts):
         key_prefix = ''
 
     ssh_util.setup_user_keys(keys, 'root', options=key_prefix)
+
+
+def get_public_host_keys(blacklist=None):
+    """Read host keys from /etc/ssh/*.pub files and return them as a list.
+
+    @param blacklist: List of key types to ignore. e.g. ['dsa', 'rsa']
+    @returns: List of keys, each formatted as a two-element tuple.
+        e.g. [('ssh-rsa', 'AAAAB3Nz...'), ('ssh-ed25519', 'AAAAC3Nx...')]
+    """
+    public_key_file_tmpl = '%s.pub' % (KEY_FILE_TPL,)
+    key_list = []
+    blacklist_files = []
+    if blacklist:
+        # Convert blacklist to filenames:
+        # 'dsa' -> '/etc/ssh/ssh_host_dsa_key.pub'
+        blacklist_files = [public_key_file_tmpl % (key_type,)
+                           for key_type in blacklist]
+    # Get list of public key files and filter out blacklisted files.
+    file_list = [hostfile for hostfile
+                 in glob.glob(public_key_file_tmpl % ('*',))
+                 if hostfile not in blacklist_files]
+
+    # Read host key files, retrieve first two fields as a tuple and
+    # append that tuple to key_list.
+    for file_name in file_list:
+        file_contents = util.load_file(file_name)
+        key_data = file_contents.split()
+        if key_data and len(key_data) > 1:
+            key_list.append(tuple(key_data[:2]))
+    return key_list
+
 
 # vi: ts=4 expandtab

@@ -6,7 +6,7 @@ Config Drive
 The configuration drive datasource supports the `OpenStack`_ configuration
 drive disk.
 
-  See `the config drive extension`_ and `introduction`_ in the public
+  See `the config drive extension`_ and `metadata introduction`_ in the public
   documentation for more information.
 
 By default, cloud-init does *always* consider this source to be a full-fledged
@@ -64,7 +64,7 @@ The following criteria are required to as a config drive:
 ::
 
   openstack/
-    - 2012-08-10/ or latest/ 
+    - 2012-08-10/ or latest/
       - meta_data.json
       - user_data (not mandatory)
     - content/
@@ -83,7 +83,7 @@ only) file in the following ways.
 
 ::
 
-   dsmode:  
+   dsmode:
      values: local, net, pass
      default: pass
 
@@ -97,10 +97,10 @@ The difference between 'local' and 'net' is that local will not require
 networking to be up before user-data actions (or boothooks) are run.
 
 ::
-    
+
    instance-id:
      default: iid-dsconfigdrive
-     
+
 This is utilized as the metadata's instance-id.  It should generally
 be unique, as it is what is used to determine "is this a new instance".
 
@@ -108,24 +108,24 @@ be unique, as it is what is used to determine "is this a new instance".
 
    public-keys:
      default: None
-  
+
 If present, these keys will be used as the public keys for the
 instance.  This value overrides the content in authorized_keys.
 
 Note: it is likely preferable to provide keys via user-data
 
 ::
-    
+
    user-data:
      default: None
-     
-This provides cloud-init user-data. See :ref:`examples <yaml_examples>` for 
+
+This provides cloud-init user-data. See :ref:`examples <yaml_examples>` for
 what all can be present here.
 
 .. _OpenStack: http://www.openstack.org/
-.. _introduction: http://docs.openstack.org/trunk/openstack-compute/admin/content/config-drive.html
+.. _metadata introduction: https://docs.openstack.org/nova/latest/user/metadata.html#config-drives
 .. _python-novaclient: https://github.com/openstack/python-novaclient
 .. _iso9660: https://en.wikipedia.org/wiki/ISO_9660
 .. _vfat: https://en.wikipedia.org/wiki/File_Allocation_Table
-.. _the config drive extension: http://docs.openstack.org/user-guide/content/config-drive.html
+.. _the config drive extension: https://docs.openstack.org/nova/latest/admin/config-drive.html
 .. vi: textwidth=78

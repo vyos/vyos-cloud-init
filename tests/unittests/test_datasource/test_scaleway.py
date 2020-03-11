@@ -7,6 +7,7 @@ import requests
 
 from cloudinit import helpers
 from cloudinit import settings
+from cloudinit import sources
 from cloudinit.sources import DataSourceScaleway
 
 from cloudinit.tests.helpers import mock, HttprettyTestCase, CiTestCase
@@ -49,6 +50,9 @@ class MetadataResponses(object):
     FAKE_METADATA = {
         'id': '00000000-0000-0000-0000-000000000000',
         'hostname': 'scaleway.host',
+        'tags': [
+            "AUTHORIZED_KEY=ssh-rsa_AAAAB3NzaC1yc2EAAAADAQABDDDDD",
+        ],
         'ssh_public_keys': [{
             'key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
             'fingerprint': '2048 06:ae:...  login (RSA)'
@@ -204,10 +208,11 @@ class TestDataSourceScaleway(HttprettyTestCase):
 
         self.assertEqual(self.datasource.get_instance_id(),
                          MetadataResponses.FAKE_METADATA['id'])
-        self.assertEqual(self.datasource.get_public_ssh_keys(), [
-            elem['key'] for elem in
-            MetadataResponses.FAKE_METADATA['ssh_public_keys']
-        ])
+        self.assertEqual(self.datasource.get_public_ssh_keys().sort(), [
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABDDDDD',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
+        ].sort())
         self.assertEqual(self.datasource.get_hostname(),
                          MetadataResponses.FAKE_METADATA['hostname'])
         self.assertEqual(self.datasource.get_userdata_raw(),
@@ -217,6 +222,70 @@ class TestDataSourceScaleway(HttprettyTestCase):
         self.assertIsNone(self.datasource.availability_zone)
         self.assertIsNone(self.datasource.region)
         self.assertEqual(sleep.call_count, 0)
+
+    def test_ssh_keys_empty(self):
+        """
+        get_public_ssh_keys() should return empty list if no ssh key are
+        available
+        """
+        self.datasource.metadata['tags'] = []
+        self.datasource.metadata['ssh_public_keys'] = []
+        self.assertEqual(self.datasource.get_public_ssh_keys(), [])
+
+    def test_ssh_keys_only_tags(self):
+        """
+        get_public_ssh_keys() should return list of keys available in tags
+        """
+        self.datasource.metadata['tags'] = [
+            "AUTHORIZED_KEY=ssh-rsa_AAAAB3NzaC1yc2EAAAADAQABDDDDD",
+            "AUTHORIZED_KEY=ssh-rsa_AAAAB3NzaC1yc2EAAAADAQABCCCCC",
+        ]
+        self.datasource.metadata['ssh_public_keys'] = []
+        self.assertEqual(self.datasource.get_public_ssh_keys().sort(), [
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABDDDDD',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+        ].sort())
+
+    def test_ssh_keys_only_conf(self):
+        """
+        get_public_ssh_keys() should return list of keys available in
+        ssh_public_keys field
+        """
+        self.datasource.metadata['tags'] = []
+        self.datasource.metadata['ssh_public_keys'] = [{
+            'key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
+            'fingerprint': '2048 06:ae:...  login (RSA)'
+        }, {
+            'key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+            'fingerprint': '2048 06:ff:...  login2 (RSA)'
+        }]
+        self.assertEqual(self.datasource.get_public_ssh_keys().sort(), [
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABDDDDD',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
+        ].sort())
+
+    def test_ssh_keys_both(self):
+        """
+        get_public_ssh_keys() should return a merge of keys available
+        in ssh_public_keys and tags
+        """
+        self.datasource.metadata['tags'] = [
+            "AUTHORIZED_KEY=ssh-rsa_AAAAB3NzaC1yc2EAAAADAQABDDDDD",
+        ]
+
+        self.datasource.metadata['ssh_public_keys'] = [{
+            'key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
+            'fingerprint': '2048 06:ae:...  login (RSA)'
+        }, {
+            'key': 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+            'fingerprint': '2048 06:ff:...  login2 (RSA)'
+        }]
+        self.assertEqual(self.datasource.get_public_ssh_keys().sort(), [
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABCCCCC',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABDDDDD',
+            u'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA',
+        ].sort())
 
     @mock.patch('cloudinit.sources.DataSourceScaleway.EphemeralDHCPv4')
     @mock.patch('cloudinit.sources.DataSourceScaleway.SourceAddressAdapter',
@@ -335,3 +404,51 @@ class TestDataSourceScaleway(HttprettyTestCase):
 
         netcfg = self.datasource.network_config
         self.assertEqual(netcfg, '0xdeadbeef')
+
+    @mock.patch('cloudinit.sources.DataSourceScaleway.net.find_fallback_nic')
+    @mock.patch('cloudinit.util.get_cmdline')
+    def test_network_config_unset(self, m_get_cmdline, fallback_nic):
+        """
+        _network_config will be set to sources.UNSET after the first boot.
+        Make sure it behave correctly.
+        """
+        m_get_cmdline.return_value = 'scaleway'
+        fallback_nic.return_value = 'ens2'
+        self.datasource.metadata['ipv6'] = None
+        self.datasource._network_config = sources.UNSET
+
+        resp = {'version': 1,
+                'config': [{
+                     'type': 'physical',
+                     'name': 'ens2',
+                     'subnets': [{'type': 'dhcp4'}]}]
+                }
+
+        netcfg = self.datasource.network_config
+        self.assertEqual(netcfg, resp)
+
+    @mock.patch('cloudinit.sources.DataSourceScaleway.LOG.warning')
+    @mock.patch('cloudinit.sources.DataSourceScaleway.net.find_fallback_nic')
+    @mock.patch('cloudinit.util.get_cmdline')
+    def test_network_config_cached_none(self, m_get_cmdline, fallback_nic,
+                                        logwarning):
+        """
+        network_config() should return config data if cached data is None
+        rather than sources.UNSET
+        """
+        m_get_cmdline.return_value = 'scaleway'
+        fallback_nic.return_value = 'ens2'
+        self.datasource.metadata['ipv6'] = None
+        self.datasource._network_config = None
+
+        resp = {'version': 1,
+                'config': [{
+                     'type': 'physical',
+                     'name': 'ens2',
+                     'subnets': [{'type': 'dhcp4'}]}]
+                }
+
+        netcfg = self.datasource.network_config
+        self.assertEqual(netcfg, resp)
+        logwarning.assert_called_with('Found None as cached _network_config. '
+                                      'Resetting to %s', sources.UNSET)

@@ -9,6 +9,8 @@ import logging
 import os
 import re
 import signal
+import time
+from io import StringIO
 
 from cloudinit.net import (
     EphemeralIPv4Network, find_fallback_nic, get_devicelist,
@@ -16,7 +18,6 @@ from cloudinit.net import (
 from cloudinit.net.network_state import mask_and_ipv4_to_bcast_addr as bcip
 from cloudinit import temp_utils
 from cloudinit import util
-from six import StringIO
 
 LOG = logging.getLogger(__name__)
 
@@ -91,16 +92,42 @@ class EphemeralDHCPv4(object):
         nmap = {'interface': 'interface', 'ip': 'fixed-address',
                 'prefix_or_mask': 'subnet-mask',
                 'broadcast': 'broadcast-address',
+                'static_routes': [
+                    'rfc3442-classless-static-routes',
+                    'classless-static-routes'
+                ],
                 'router': 'routers'}
-        kwargs = dict([(k, self.lease.get(v)) for k, v in nmap.items()])
+        kwargs = self.extract_dhcp_options_mapping(nmap)
         if not kwargs['broadcast']:
             kwargs['broadcast'] = bcip(kwargs['prefix_or_mask'], kwargs['ip'])
+        if kwargs['static_routes']:
+            kwargs['static_routes'] = (
+                parse_static_routes(kwargs['static_routes']))
         if self.connectivity_url:
             kwargs['connectivity_url'] = self.connectivity_url
         ephipv4 = EphemeralIPv4Network(**kwargs)
         ephipv4.__enter__()
         self._ephipv4 = ephipv4
         return self.lease
+
+    def extract_dhcp_options_mapping(self, nmap):
+        result = {}
+        for internal_reference, lease_option_names in nmap.items():
+            if isinstance(lease_option_names, list):
+                self.get_first_option_value(
+                    internal_reference,
+                    lease_option_names,
+                    result
+                )
+            else:
+                result[internal_reference] = self.lease.get(lease_option_names)
+        return result
+
+    def get_first_option_value(self, internal_mapping,
+                               lease_option_names, result):
+        for different_names in lease_option_names:
+            if not result.get(internal_mapping):
+                result[internal_mapping] = self.lease.get(different_names)
 
 
 def maybe_perform_dhcp_discovery(nic=None):
@@ -127,7 +154,9 @@ def maybe_perform_dhcp_discovery(nic=None):
     if not dhclient_path:
         LOG.debug('Skip dhclient configuration: No dhclient command found.')
         return []
-    with temp_utils.tempdir(prefix='cloud-init-dhcp-', needs_exe=True) as tdir:
+    with temp_utils.tempdir(rmtree_ignore_errors=True,
+                            prefix='cloud-init-dhcp-',
+                            needs_exe=True) as tdir:
         # Use /var/tmp because /run/cloud-init/tmp is mounted noexec
         return dhcp_discovery(dhclient_path, nic, tdir)
 
@@ -195,24 +224,39 @@ def dhcp_discovery(dhclient_cmd_path, interface, cleandir):
            '-pf', pid_file, interface, '-sf', '/bin/true']
     util.subp(cmd, capture=True)
 
-    # dhclient doesn't write a pid file until after it forks when it gets a
-    # proper lease response. Since cleandir is a temp directory that gets
-    # removed, we need to wait for that pidfile creation before the
-    # cleandir is removed, otherwise we get FileNotFound errors.
+    # Wait for pid file and lease file to appear, and for the process
+    # named by the pid file to daemonize (have pid 1 as its parent). If we
+    # try to read the lease file before daemonization happens, we might try
+    # to read it before the dhclient has actually written it. We also have
+    # to wait until the dhclient has become a daemon so we can be sure to
+    # kill the correct process, thus freeing cleandir to be deleted back
+    # up the callstack.
     missing = util.wait_for_files(
         [pid_file, lease_file], maxwait=5, naplen=0.01)
     if missing:
         LOG.warning("dhclient did not produce expected files: %s",
                     ', '.join(os.path.basename(f) for f in missing))
         return []
-    pid_content = util.load_file(pid_file).strip()
-    try:
-        pid = int(pid_content)
-    except ValueError:
-        LOG.debug(
-            "pid file contains non-integer content '%s'", pid_content)
-    else:
-        os.kill(pid, signal.SIGKILL)
+
+    ppid = 'unknown'
+    for _ in range(0, 1000):
+        pid_content = util.load_file(pid_file).strip()
+        try:
+            pid = int(pid_content)
+        except ValueError:
+            pass
+        else:
+            ppid = util.get_proc_ppid(pid)
+            if ppid == 1:
+                LOG.debug('killing dhclient with pid=%s', pid)
+                os.kill(pid, signal.SIGKILL)
+                return parse_dhcp_lease_file(lease_file)
+        time.sleep(0.01)
+
+    LOG.error(
+        'dhclient(pid=%s, parentpid=%s) failed to daemonize after %s seconds',
+        pid_content, ppid, 0.01 * 1000
+    )
     return parse_dhcp_lease_file(lease_file)
 
 
@@ -253,5 +297,97 @@ def networkd_get_option_from_leases(keyname, leases_d=None):
         if data.get(keyname):
             return data[keyname]
     return None
+
+
+def parse_static_routes(rfc3442):
+    """ parse rfc3442 format and return a list containing tuple of strings.
+
+    The tuple is composed of the network_address (including net length) and
+    gateway for a parsed static route.  It can parse two formats of rfc3442,
+    one from dhcpcd and one from dhclient (isc).
+
+    @param rfc3442: string in rfc3442 format (isc or dhcpd)
+    @returns: list of tuple(str, str) for all valid parsed routes until the
+              first parsing error.
+
+    E.g.
+    sr=parse_static_routes("32,169,254,169,254,130,56,248,255,0,130,56,240,1")
+    sr=[
+        ("169.254.169.254/32", "130.56.248.255"), ("0.0.0.0/0", "130.56.240.1")
+    ]
+
+    sr2 = parse_static_routes("24.191.168.128 192.168.128.1,0 192.168.128.1")
+    sr2 = [
+        ("191.168.128.0/24", "192.168.128.1"), ("0.0.0.0/0", "192.168.128.1")
+    ]
+
+    Python version of isc-dhclient's hooks:
+       /etc/dhcp/dhclient-exit-hooks.d/rfc3442-classless-routes
+    """
+    # raw strings from dhcp lease may end in semi-colon
+    rfc3442 = rfc3442.rstrip(";")
+    tokens = [tok for tok in re.split(r"[, .]", rfc3442) if tok]
+    static_routes = []
+
+    def _trunc_error(cidr, required, remain):
+        msg = ("RFC3442 string malformed.  Current route has CIDR of %s "
+               "and requires %s significant octets, but only %s remain. "
+               "Verify DHCP rfc3442-classless-static-routes value: %s"
+               % (cidr, required, remain, rfc3442))
+        LOG.error(msg)
+
+    current_idx = 0
+    for idx, tok in enumerate(tokens):
+        if idx < current_idx:
+            continue
+        net_length = int(tok)
+        if net_length in range(25, 33):
+            req_toks = 9
+            if len(tokens[idx:]) < req_toks:
+                _trunc_error(net_length, req_toks, len(tokens[idx:]))
+                return static_routes
+            net_address = ".".join(tokens[idx+1:idx+5])
+            gateway = ".".join(tokens[idx+5:idx+req_toks])
+            current_idx = idx + req_toks
+        elif net_length in range(17, 25):
+            req_toks = 8
+            if len(tokens[idx:]) < req_toks:
+                _trunc_error(net_length, req_toks, len(tokens[idx:]))
+                return static_routes
+            net_address = ".".join(tokens[idx+1:idx+4] + ["0"])
+            gateway = ".".join(tokens[idx+4:idx+req_toks])
+            current_idx = idx + req_toks
+        elif net_length in range(9, 17):
+            req_toks = 7
+            if len(tokens[idx:]) < req_toks:
+                _trunc_error(net_length, req_toks, len(tokens[idx:]))
+                return static_routes
+            net_address = ".".join(tokens[idx+1:idx+3] + ["0", "0"])
+            gateway = ".".join(tokens[idx+3:idx+req_toks])
+            current_idx = idx + req_toks
+        elif net_length in range(1, 9):
+            req_toks = 6
+            if len(tokens[idx:]) < req_toks:
+                _trunc_error(net_length, req_toks, len(tokens[idx:]))
+                return static_routes
+            net_address = ".".join(tokens[idx+1:idx+2] + ["0", "0", "0"])
+            gateway = ".".join(tokens[idx+2:idx+req_toks])
+            current_idx = idx + req_toks
+        elif net_length == 0:
+            req_toks = 5
+            if len(tokens[idx:]) < req_toks:
+                _trunc_error(net_length, req_toks, len(tokens[idx:]))
+                return static_routes
+            net_address = "0.0.0.0"
+            gateway = ".".join(tokens[idx+1:idx+req_toks])
+            current_idx = idx + req_toks
+        else:
+            LOG.error('Parsed invalid net length "%s".  Verify DHCP '
+                      'rfc3442-classless-static-routes value.', net_length)
+            return static_routes
+
+        static_routes.append(("%s/%s" % (net_address, net_length), gateway))
+
+    return static_routes
 
 # vi: ts=4 expandtab
