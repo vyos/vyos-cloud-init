@@ -94,7 +94,7 @@ def _iface_add_attrs(iface, index, ipv4_subnet_mtu):
     ]
 
     renames = {'mac_address': 'hwaddress'}
-    if iface['type'] not in ['bond', 'bridge', 'vlan']:
+    if iface['type'] not in ['bond', 'bridge', 'infiniband', 'vlan']:
         ignore_map.append('mac_address')
 
     for key, value in iface.items():
@@ -366,8 +366,6 @@ class Renderer(renderer.Renderer):
         down = indent + "pre-down route del"
         or_true = " || true"
         mapping = {
-            'network': '-net',
-            'netmask': 'netmask',
             'gateway': 'gw',
             'metric': 'metric',
         }
@@ -379,13 +377,21 @@ class Renderer(renderer.Renderer):
             default_gw = ' -A inet6 default'
 
         route_line = ''
-        for k in ['network', 'netmask', 'gateway', 'metric']:
-            if default_gw and k in ['network', 'netmask']:
+        for k in ['network', 'gateway', 'metric']:
+            if default_gw and k == 'network':
                 continue
             if k == 'gateway':
                 route_line += '%s %s %s' % (default_gw, mapping[k], route[k])
             elif k in route:
-                route_line += ' %s %s' % (mapping[k], route[k])
+                if k == 'network':
+                    if ':' in route[k]:
+                        route_line += ' -A inet6'
+                    else:
+                        route_line += ' -net'
+                    if 'prefix' in route:
+                        route_line += ' %s/%s' % (route[k], route['prefix'])
+                else:
+                    route_line += ' %s %s' % (mapping[k], route[k])
         content.append(up + route_line + or_true)
         content.append(down + route_line + or_true)
         return content
@@ -393,6 +399,7 @@ class Renderer(renderer.Renderer):
     def _render_iface(self, iface, render_hwaddress=False):
         sections = []
         subnets = iface.get('subnets', {})
+        accept_ra = iface.pop('accept-ra', None)
         if subnets:
             for index, subnet in enumerate(subnets):
                 ipv4_subnet_mtu = None
@@ -405,8 +412,29 @@ class Renderer(renderer.Renderer):
                 else:
                     ipv4_subnet_mtu = subnet.get('mtu')
                 iface['inet'] = subnet_inet
-                if subnet['type'].startswith('dhcp'):
+                if (subnet['type'] == 'dhcp4' or subnet['type'] == 'dhcp6' or
+                        subnet['type'] == 'ipv6_dhcpv6-stateful'):
+                    # Configure network settings using DHCP or DHCPv6
                     iface['mode'] = 'dhcp'
+                    if accept_ra is not None:
+                        # Accept router advertisements (0=off, 1=on)
+                        iface['accept_ra'] = '1' if accept_ra else '0'
+                elif subnet['type'] == 'ipv6_dhcpv6-stateless':
+                    # Configure network settings using SLAAC from RAs
+                    iface['mode'] = 'auto'
+                    # Use stateless DHCPv6 (0=off, 1=on)
+                    iface['dhcp'] = '1'
+                elif subnet['type'] == 'ipv6_slaac':
+                    # Configure network settings using SLAAC from RAs
+                    iface['mode'] = 'auto'
+                    # Use stateless DHCPv6 (0=off, 1=on)
+                    iface['dhcp'] = '0'
+                elif subnet_is_ipv6(subnet):
+                    # mode might be static6, eni uses 'static'
+                    iface['mode'] = 'static'
+                    if accept_ra is not None:
+                        # Accept router advertisements (0=off, 1=on)
+                        iface['accept_ra'] = '1' if accept_ra else '0'
 
                 # do not emit multiple 'auto $IFACE' lines as older (precise)
                 # ifupdown complains
@@ -461,9 +489,10 @@ class Renderer(renderer.Renderer):
         order = {
             'loopback': 0,
             'physical': 1,
-            'bond': 2,
-            'bridge': 3,
-            'vlan': 4,
+            'infiniband': 2,
+            'bond': 3,
+            'bridge': 4,
+            'vlan': 5,
         }
 
         sections = []

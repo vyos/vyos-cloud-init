@@ -3,7 +3,7 @@
 import copy
 import httpretty
 import json
-import mock
+from unittest import mock
 
 from cloudinit import helpers
 from cloudinit.sources import DataSourceEc2 as ec2
@@ -191,7 +191,9 @@ def register_mock_metaserver(base_url, data):
             register(base_url, 'not found', status=404)
 
     def myreg(*argc, **kwargs):
-        return httpretty.register_uri(httpretty.GET, *argc, **kwargs)
+        url = argc[0]
+        method = httpretty.PUT if ec2.API_TOKEN_ROUTE in url else httpretty.GET
+        return httpretty.register_uri(method, *argc, **kwargs)
 
     register_helper(myreg, base_url, data)
 
@@ -237,6 +239,8 @@ class TestEc2(test_helpers.HttprettyTestCase):
         if md:
             all_versions = (
                 [ds.min_metadata_version] + ds.extended_metadata_versions)
+            token_url = self.data_url('latest', data_item='api/token')
+            register_mock_metaserver(token_url, 'API-TOKEN')
             for version in all_versions:
                 metadata_url = self.data_url(version) + '/'
                 if version == md_version:
@@ -401,6 +405,47 @@ class TestEc2(test_helpers.HttprettyTestCase):
         ds.metadata = DEFAULT_METADATA
         self.assertEqual('my-identity-id', ds.get_instance_id())
 
+    def test_classic_instance_true(self):
+        """If no vpc-id in metadata, is_classic_instance must return true."""
+        md_copy = copy.deepcopy(DEFAULT_METADATA)
+        ifaces_md = md_copy.get('network', {}).get('interfaces', {})
+        for _mac, mac_data in ifaces_md.get('macs', {}).items():
+            if 'vpc-id' in mac_data:
+                del mac_data['vpc-id']
+
+        ds = self._setup_ds(
+            platform_data=self.valid_platform_data,
+            sys_cfg={'datasource': {'Ec2': {'strict_id': False}}},
+            md={'md': md_copy})
+        self.assertTrue(ds.get_data())
+        self.assertTrue(ds.is_classic_instance())
+
+    def test_classic_instance_false(self):
+        """If vpc-id in metadata, is_classic_instance must return false."""
+        ds = self._setup_ds(
+            platform_data=self.valid_platform_data,
+            sys_cfg={'datasource': {'Ec2': {'strict_id': False}}},
+            md={'md': DEFAULT_METADATA})
+        self.assertTrue(ds.get_data())
+        self.assertFalse(ds.is_classic_instance())
+
+    def test_aws_token_redacted(self):
+        """Verify that aws tokens are redacted when logged."""
+        ds = self._setup_ds(
+            platform_data=self.valid_platform_data,
+            sys_cfg={'datasource': {'Ec2': {'strict_id': False}}},
+            md={'md': DEFAULT_METADATA})
+        self.assertTrue(ds.get_data())
+        all_logs = self.logs.getvalue().splitlines()
+        REDACT_TTL = "'X-aws-ec2-metadata-token-ttl-seconds': 'REDACTED'"
+        REDACT_TOK = "'X-aws-ec2-metadata-token': 'REDACTED'"
+        logs_with_redacted_ttl = [log for log in all_logs if REDACT_TTL in log]
+        logs_with_redacted = [log for log in all_logs if REDACT_TOK in log]
+        logs_with_token = [log for log in all_logs if 'API-TOKEN' in log]
+        self.assertEqual(1, len(logs_with_redacted_ttl))
+        self.assertEqual(79, len(logs_with_redacted))
+        self.assertEqual(0, len(logs_with_token))
+
     @mock.patch('cloudinit.net.dhcp.maybe_perform_dhcp_discovery')
     def test_valid_platform_with_strict_true(self, m_dhcp):
         """Valid platform data should return true with strict_id true."""
@@ -514,7 +559,8 @@ class TestEc2(test_helpers.HttprettyTestCase):
         m_dhcp.assert_called_once_with('eth9')
         m_net.assert_called_once_with(
             broadcast='192.168.2.255', interface='eth9', ip='192.168.2.9',
-            prefix_or_mask='255.255.255.0', router='192.168.2.1')
+            prefix_or_mask='255.255.255.0', router='192.168.2.1',
+            static_routes=None)
         self.assertIn('Crawl of metadata service took', self.logs.getvalue())
 
 
@@ -636,5 +682,46 @@ class TestConvertEc2MetadataNetworkConfig(test_helpers.CiTestCase):
             self.assertEqual(
                 expected,
                 ec2.convert_ec2_metadata_network_config(self.network_metadata))
+
+
+class TesIdentifyPlatform(test_helpers.CiTestCase):
+
+    def collmock(self, **kwargs):
+        """return non-special _collect_platform_data updated with changes."""
+        unspecial = {
+            'asset_tag': '3857-0037-2746-7462-1818-3997-77',
+            'serial': 'H23-C4J3JV-R6',
+            'uuid': '81c7e555-6471-4833-9551-1ab366c4cfd2',
+            'uuid_source': 'dmi',
+            'vendor': 'tothecloud',
+        }
+        unspecial.update(**kwargs)
+        return unspecial
+
+    @mock.patch('cloudinit.sources.DataSourceEc2._collect_platform_data')
+    def test_identify_zstack(self, m_collect):
+        """zstack should be identified if chassis-asset-tag ends in .zstack.io
+        """
+        m_collect.return_value = self.collmock(asset_tag='123456.zstack.io')
+        self.assertEqual(ec2.CloudNames.ZSTACK, ec2.identify_platform())
+
+    @mock.patch('cloudinit.sources.DataSourceEc2._collect_platform_data')
+    def test_identify_zstack_full_domain_only(self, m_collect):
+        """zstack asset-tag matching should match only on full domain boundary.
+        """
+        m_collect.return_value = self.collmock(asset_tag='123456.buzzstack.io')
+        self.assertEqual(ec2.CloudNames.UNKNOWN, ec2.identify_platform())
+
+    @mock.patch('cloudinit.sources.DataSourceEc2._collect_platform_data')
+    def test_identify_e24cloud(self, m_collect):
+        """e24cloud identified if vendor is e24cloud"""
+        m_collect.return_value = self.collmock(vendor='e24cloud')
+        self.assertEqual(ec2.CloudNames.E24CLOUD, ec2.identify_platform())
+
+    @mock.patch('cloudinit.sources.DataSourceEc2._collect_platform_data')
+    def test_identify_e24cloud_negative(self, m_collect):
+        """e24cloud identified if vendor is e24cloud"""
+        m_collect.return_value = self.collmock(vendor='e24cloudyday')
+        self.assertEqual(ec2.CloudNames.UNKNOWN, ec2.identify_platform())
 
 # vi: ts=4 expandtab

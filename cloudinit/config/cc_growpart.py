@@ -22,11 +22,11 @@ mountpoint in the filesystem or a path to the block device in ``/dev``.
 
 The utility to use for resizing can be selected using the ``mode`` config key.
 If ``mode`` key is set to ``auto``, then any available utility (either
-``growpart`` or ``gpart``) will be used. If neither utility is available, no
-error will be raised. If ``mode`` is set to ``growpart``, then the ``growpart``
-utility will be used. If this utility is not available on the system, this will
-result in an error. If ``mode`` is set to ``off`` or ``false``, then
-``cc_growpart`` will take no action.
+``growpart`` or BSD ``gpart``) will be used. If neither utility is available,
+no error will be raised. If ``mode`` is set to ``growpart``, then the
+``growpart`` utility will be used. If this utility is not available on the
+system, this will result in an error. If ``mode`` is set to ``off`` or
+``false``, then ``cc_growpart`` will take no action.
 
 There is some functionality overlap between this module and the ``growroot``
 functionality of ``cloud-initramfs-tools``. However, there are some situations
@@ -132,7 +132,7 @@ class ResizeGrowPart(object):
 
         try:
             (out, _err) = util.subp(["growpart", "--help"], env=myenv)
-            if re.search(r"--update\s+", out, re.DOTALL):
+            if re.search(r"--update\s+", out):
                 return True
 
         except util.ProcessExecutionError:
@@ -161,9 +161,17 @@ class ResizeGrowPart(object):
 
 class ResizeGpart(object):
     def available(self):
-        if not util.which('gpart'):
-            return False
-        return True
+        myenv = os.environ.copy()
+        myenv['LANG'] = 'C'
+
+        try:
+            (_out, err) = util.subp(["gpart", "help"], env=myenv, rcs=[0, 1])
+            if re.search(r"gpart recover ", err):
+                return True
+
+        except util.ProcessExecutionError:
+            pass
+        return False
 
     def resize(self, diskdev, partnum, partdev):
         """
@@ -215,7 +223,8 @@ def device_part_info(devpath):
     # FreeBSD doesn't know of sysfs so just get everything we need from
     # the device, like /dev/vtbd0p2.
     if util.is_FreeBSD():
-        m = re.search('^(/dev/.+)p([0-9])$', devpath)
+        freebsd_part = "/dev/" + util.find_freebsd_part(devpath)
+        m = re.search('^(/dev/.+)p([0-9])$', freebsd_part)
         return (m.group(1), m.group(2))
 
     if not os.path.exists(syspath):
@@ -320,7 +329,7 @@ def handle(_name, cfg, _cloud, log, _args):
 
     mycfg = cfg.get('growpart')
     if not isinstance(mycfg, dict):
-        log.warn("'growpart' in config was not a dict")
+        log.warning("'growpart' in config was not a dict")
         return
 
     mode = mycfg.get('mode', "auto")

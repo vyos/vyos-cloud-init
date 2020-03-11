@@ -9,6 +9,7 @@ import errno
 import logging
 import os
 import re
+from functools import partial
 
 from cloudinit.net.network_state import mask_to_net_prefix
 from cloudinit import util
@@ -108,6 +109,141 @@ def is_bond(devname):
     return os.path.exists(sys_dev_path(devname, "bonding"))
 
 
+def get_master(devname):
+    """Return the master path for devname, or None if no master"""
+    path = sys_dev_path(devname, path="master")
+    if os.path.exists(path):
+        return path
+    return None
+
+
+def master_is_bridge_or_bond(devname):
+    """Return a bool indicating if devname's master is a bridge or bond"""
+    master_path = get_master(devname)
+    if master_path is None:
+        return False
+    bonding_path = os.path.join(master_path, "bonding")
+    bridge_path = os.path.join(master_path, "bridge")
+    return (os.path.exists(bonding_path) or os.path.exists(bridge_path))
+
+
+def is_netfailover(devname, driver=None):
+    """ netfailover driver uses 3 nics, master, primary and standby.
+        this returns True if the device is either the primary or standby
+        as these devices are to be ignored.
+    """
+    if driver is None:
+        driver = device_driver(devname)
+    if is_netfail_primary(devname, driver) or is_netfail_standby(devname,
+                                                                 driver):
+        return True
+    return False
+
+
+def get_dev_features(devname):
+    """ Returns a str from reading /sys/class/net/<devname>/device/features."""
+    features = ''
+    try:
+        features = read_sys_net(devname, 'device/features')
+    except Exception:
+        pass
+    return features
+
+
+def has_netfail_standby_feature(devname):
+    """ Return True if VIRTIO_NET_F_STANDBY bit (62) is set.
+
+    https://github.com/torvalds/linux/blob/ \
+        089cf7f6ecb266b6a4164919a2e69bd2f938374a/ \
+        include/uapi/linux/virtio_net.h#L60
+    """
+    features = get_dev_features(devname)
+    if not features or len(features) < 64:
+        return False
+    return features[62] == "1"
+
+
+def is_netfail_master(devname, driver=None):
+    """ A device is a "netfail master" device if:
+
+        - The device does NOT have the 'master' sysfs attribute
+        - The device driver is 'virtio_net'
+        - The device has the standby feature bit set
+
+        Return True if all of the above is True.
+    """
+    if get_master(devname) is not None:
+        return False
+
+    if driver is None:
+        driver = device_driver(devname)
+
+    if driver != "virtio_net":
+        return False
+
+    if not has_netfail_standby_feature(devname):
+        return False
+
+    return True
+
+
+def is_netfail_primary(devname, driver=None):
+    """ A device is a "netfail primary" device if:
+
+        - the device has a 'master' sysfs file
+        - the device driver is not 'virtio_net'
+        - the 'master' sysfs file points to device with virtio_net driver
+        - the 'master' device has the 'standby' feature bit set
+
+        Return True if all of the above is True.
+    """
+    # /sys/class/net/<devname>/master -> ../../<master devname>
+    master_sysfs_path = sys_dev_path(devname, path='master')
+    if not os.path.exists(master_sysfs_path):
+        return False
+
+    if driver is None:
+        driver = device_driver(devname)
+
+    if driver == "virtio_net":
+        return False
+
+    master_devname = os.path.basename(os.path.realpath(master_sysfs_path))
+    master_driver = device_driver(master_devname)
+    if master_driver != "virtio_net":
+        return False
+
+    master_has_standby = has_netfail_standby_feature(master_devname)
+    if not master_has_standby:
+        return False
+
+    return True
+
+
+def is_netfail_standby(devname, driver=None):
+    """ A device is a "netfail standby" device if:
+
+        - The device has a 'master' sysfs attribute
+        - The device driver is 'virtio_net'
+        - The device has the standby feature bit set
+
+        Return True if all of the above is True.
+    """
+    if get_master(devname) is None:
+        return False
+
+    if driver is None:
+        driver = device_driver(devname)
+
+    if driver != "virtio_net":
+        return False
+
+    if not has_netfail_standby_feature(devname):
+        return False
+
+    return True
+
+
 def is_renamed(devname):
     """
     /* interface name assignment types (sysfs name_assign_type attribute) */
@@ -171,6 +307,9 @@ def device_devid(devname):
 
 
 def get_devicelist():
+    if util.is_FreeBSD():
+        return list(get_interfaces_by_mac().values())
+
     try:
         devs = os.listdir(get_sys_class_path())
     except OSError as e:
@@ -193,6 +332,35 @@ def is_disabled_cfg(cfg):
 
 def find_fallback_nic(blacklist_drivers=None):
     """Return the name of the 'fallback' network device."""
+    if util.is_FreeBSD():
+        return find_fallback_nic_on_freebsd(blacklist_drivers)
+    else:
+        return find_fallback_nic_on_linux(blacklist_drivers)
+
+
+def find_fallback_nic_on_freebsd(blacklist_drivers=None):
+    """Return the name of the 'fallback' network device on FreeBSD.
+
+    @param blacklist_drivers: currently ignored
+    @return default interface, or None
+
+
+    we'll use the first interface from ``ifconfig -l -u ether``
+    """
+    stdout, _stderr = util.subp(['ifconfig', '-l', '-u', 'ether'])
+    values = stdout.split()
+    if values:
+        return values[0]
+    # On FreeBSD <= 10, 'ifconfig -l' ignores the interfaces with DOWN
+    # status
+    values = list(get_interfaces_by_mac().values())
+    values.sort()
+    if values:
+        return values[0]
+
+
+def find_fallback_nic_on_linux(blacklist_drivers=None):
+    """Return the name of the 'fallback' network device on Linux."""
     if not blacklist_drivers:
         blacklist_drivers = []
 
@@ -226,6 +394,9 @@ def find_fallback_nic(blacklist_drivers=None):
         if is_bond(interface):
             # skip any bonds
             continue
+        if is_netfailover(interface):
+            # ignore netfailover primary/standby interfaces
+            continue
         carrier = read_sys_net_int(interface, 'carrier')
         if carrier:
             connected.append(interface)
@@ -250,7 +421,7 @@ def find_fallback_nic(blacklist_drivers=None):
         potential_interfaces = possibly_connected
 
     # if eth0 exists use it above anything else, otherwise get the interface
-    # that we can read 'first' (using the sorted defintion of first).
+    # that we can read 'first' (using the sorted definition of first).
     names = list(sorted(potential_interfaces, key=natural_sort_key))
     if DEFAULT_PRIMARY_INTERFACE in names:
         names.remove(DEFAULT_PRIMARY_INTERFACE)
@@ -264,46 +435,34 @@ def find_fallback_nic(blacklist_drivers=None):
 
 
 def generate_fallback_config(blacklist_drivers=None, config_driver=None):
-    """Determine which attached net dev is most likely to have a connection and
-       generate network state to run dhcp on that interface"""
-
+    """Generate network cfg v2 for dhcp on the NIC most likely connected."""
     if not config_driver:
         config_driver = False
 
     target_name = find_fallback_nic(blacklist_drivers=blacklist_drivers)
-    if target_name:
-        target_mac = read_sys_net_safe(target_name, 'address')
-        nconf = {'config': [], 'version': 1}
-        cfg = {'type': 'physical', 'name': target_name,
-               'mac_address': target_mac, 'subnets': [{'type': 'dhcp'}]}
-        # inject the device driver name, dev_id into config if enabled and
-        # device has a valid device driver value
-        if config_driver:
-            driver = device_driver(target_name)
-            if driver:
-                cfg['params'] = {
-                    'driver': driver,
-                    'device_id': device_devid(target_name),
-                }
-        nconf['config'].append(cfg)
-        return nconf
-    else:
+    if not target_name:
         # can't read any interfaces addresses (or there are none); give up
         return None
 
+    # netfail cannot use mac for matching, they have duplicate macs
+    if is_netfail_master(target_name):
+        match = {'name': target_name}
+    else:
+        match = {
+            'macaddress': read_sys_net_safe(target_name, 'address').lower()}
+    cfg = {'dhcp4': True, 'set-name': target_name, 'match': match}
+    if config_driver:
+        driver = device_driver(target_name)
+        if driver:
+            cfg['match']['driver'] = driver
+    nconf = {'ethernets': {target_name: cfg}, 'version': 2}
+    return nconf
 
-def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
-    """read the network config and rename devices accordingly.
-    if strict_present is false, then do not raise exception if no devices
-    match.  if strict_busy is false, then do not raise exception if the
-    device cannot be renamed because it is currently configured.
 
-    renames are only attempted for interfaces of type 'physical'.  It is
-    expected that the network system will create other devices with the
-    correct name in place."""
+def extract_physdevs(netcfg):
 
     def _version_1(netcfg):
-        renames = []
+        physdevs = []
         for ent in netcfg.get('config', {}):
             if ent.get('type') != 'physical':
                 continue
@@ -317,11 +476,11 @@ def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
                 driver = device_driver(name)
             if not device_id:
                 device_id = device_devid(name)
-            renames.append([mac, name, driver, device_id])
-        return renames
+            physdevs.append([mac, name, driver, device_id])
+        return physdevs
 
     def _version_2(netcfg):
-        renames = []
+        physdevs = []
         for ent in netcfg.get('ethernets', {}).values():
             # only rename if configured to do so
             name = ent.get('set-name')
@@ -337,16 +496,69 @@ def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
                 driver = device_driver(name)
             if not device_id:
                 device_id = device_devid(name)
-            renames.append([mac, name, driver, device_id])
-        return renames
+            physdevs.append([mac, name, driver, device_id])
+        return physdevs
 
-    if netcfg.get('version') == 1:
-        return _rename_interfaces(_version_1(netcfg))
-    elif netcfg.get('version') == 2:
-        return _rename_interfaces(_version_2(netcfg))
+    version = netcfg.get('version')
+    if version == 1:
+        return _version_1(netcfg)
+    elif version == 2:
+        return _version_2(netcfg)
 
-    raise RuntimeError('Failed to apply network config names. Found bad'
-                       ' network config version: %s' % netcfg.get('version'))
+    raise RuntimeError('Unknown network config version: %s' % version)
+
+
+def wait_for_physdevs(netcfg, strict=True):
+    physdevs = extract_physdevs(netcfg)
+
+    # set of expected iface names and mac addrs
+    expected_ifaces = dict([(iface[0], iface[1]) for iface in physdevs])
+    expected_macs = set(expected_ifaces.keys())
+
+    # set of current macs
+    present_macs = get_interfaces_by_mac().keys()
+
+    # compare the set of expected mac address values to
+    # the current macs present; we only check MAC as cloud-init
+    # has not yet renamed interfaces and the netcfg may include
+    # such renames.
+    for _ in range(0, 5):
+        if expected_macs.issubset(present_macs):
+            LOG.debug('net: all expected physical devices present')
+            return
+
+        missing = expected_macs.difference(present_macs)
+        LOG.debug('net: waiting for expected net devices: %s', missing)
+        for mac in missing:
+            # trigger a settle, unless this interface exists
+            syspath = sys_dev_path(expected_ifaces[mac])
+            settle = partial(util.udevadm_settle, exists=syspath)
+            msg = 'Waiting for udev events to settle or %s exists' % syspath
+            util.log_time(LOG.debug, msg, func=settle)
+
+        # update present_macs after settles
+        present_macs = get_interfaces_by_mac().keys()
+
+    msg = 'Not all expected physical devices present: %s' % missing
+    LOG.warning(msg)
+    if strict:
+        raise RuntimeError(msg)
+
+
+def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
+    """read the network config and rename devices accordingly.
+    if strict_present is false, then do not raise exception if no devices
+    match.  if strict_busy is false, then do not raise exception if the
+    device cannot be renamed because it is currently configured.
+
+    renames are only attempted for interfaces of type 'physical'.  It is
+    expected that the network system will create other devices with the
+    correct name in place."""
+
+    try:
+        _rename_interfaces(extract_physdevs(netcfg))
+    except RuntimeError as e:
+        raise RuntimeError('Failed to apply network config names: %s' % e)
 
 
 def interface_has_own_mac(ifname, strict=False):
@@ -585,6 +797,40 @@ def get_ib_interface_hwaddr(ifname, ethernet_format):
 
 
 def get_interfaces_by_mac():
+    if util.is_FreeBSD():
+        return get_interfaces_by_mac_on_freebsd()
+    else:
+        return get_interfaces_by_mac_on_linux()
+
+
+def get_interfaces_by_mac_on_freebsd():
+    (out, _) = util.subp(['ifconfig', '-a', 'ether'])
+
+    # flatten each interface block in a single line
+    def flatten(out):
+        curr_block = ''
+        for l in out.split('\n'):
+            if l.startswith('\t'):
+                curr_block += l
+            else:
+                if curr_block:
+                    yield curr_block
+                curr_block = l
+        yield curr_block
+
+    # looks for interface and mac in a list of flatten block
+    def find_mac(flat_list):
+        for block in flat_list:
+            m = re.search(
+                r"^(?P<ifname>\S*): .*ether\s(?P<mac>[\da-f:]{17}).*",
+                block)
+            if m:
+                yield (m.group('mac'), m.group('ifname'))
+    results = {mac: ifname for mac, ifname in find_mac(flatten(out))}
+    return results
+
+
+def get_interfaces_by_mac_on_linux():
     """Build a dictionary of tuples {mac: name}.
 
     Bridges and any devices that have a 'stolen' mac are excluded."""
@@ -621,6 +867,12 @@ def get_interfaces():
         if is_bridge(name):
             continue
         if is_vlan(name):
+            continue
+        if is_bond(name):
+            continue
+        if get_master(name) is not None and not master_is_bridge_or_bond(name):
+            continue
+        if is_netfailover(name):
             continue
         mac = get_interface_mac(name)
         # some devices may not have a mac (tun0)
@@ -677,7 +929,7 @@ class EphemeralIPv4Network(object):
     """
 
     def __init__(self, interface, ip, prefix_or_mask, broadcast, router=None,
-                 connectivity_url=None):
+                 connectivity_url=None, static_routes=None):
         """Setup context manager and validate call signature.
 
         @param interface: Name of the network interface to bring up.
@@ -688,6 +940,7 @@ class EphemeralIPv4Network(object):
         @param router: Optionally the default gateway IP.
         @param connectivity_url: Optionally, a URL to verify if a usable
            connection already exists.
+        @param static_routes: Optionally a list of static routes from DHCP
         """
         if not all([interface, ip, prefix_or_mask, broadcast]):
             raise ValueError(
@@ -704,6 +957,7 @@ class EphemeralIPv4Network(object):
         self.ip = ip
         self.broadcast = broadcast
         self.router = router
+        self.static_routes = static_routes
         self.cleanup_cmds = []  # List of commands to run to cleanup state.
 
     def __enter__(self):
@@ -716,7 +970,21 @@ class EphemeralIPv4Network(object):
                 return
 
         self._bringup_device()
-        if self.router:
+
+        # rfc3442 requires us to ignore the router config *if* classless static
+        # routes are provided.
+        #
+        # https://tools.ietf.org/html/rfc3442
+        #
+        # If the DHCP server returns both a Classless Static Routes option and
+        # a Router option, the DHCP client MUST ignore the Router option.
+        #
+        # Similarly, if the DHCP server returns both a Classless Static Routes
+        # option and a Static Routes option, the DHCP client MUST ignore the
+        # Static Routes option.
+        if self.static_routes:
+            self._bringup_static_routes()
+        elif self.router:
             self._bringup_router()
 
     def __exit__(self, excp_type, excp_value, excp_traceback):
@@ -759,6 +1027,20 @@ class EphemeralIPv4Network(object):
             self.cleanup_cmds.append(
                 ['ip', '-family', 'inet', 'addr', 'del', cidr, 'dev',
                  self.interface])
+
+    def _bringup_static_routes(self):
+        # static_routes = [("169.254.169.254/32", "130.56.248.255"),
+        #                  ("0.0.0.0/0", "130.56.240.1")]
+        for net_address, gateway in self.static_routes:
+            via_arg = []
+            if gateway != "0.0.0.0/0":
+                via_arg = ['via', gateway]
+            util.subp(
+                ['ip', '-4', 'route', 'add', net_address] + via_arg +
+                ['dev', self.interface], capture=True)
+            self.cleanup_cmds.insert(
+                0, ['ip', '-4', 'route', 'del', net_address] + via_arg +
+                   ['dev', self.interface])
 
     def _bringup_router(self):
         """Perform the ip commands to fully setup the router if needed."""

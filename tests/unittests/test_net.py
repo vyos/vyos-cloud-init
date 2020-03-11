@@ -9,6 +9,7 @@ from cloudinit.net import (
 from cloudinit.sources.helpers import openstack
 from cloudinit import temp_utils
 from cloudinit import util
+from cloudinit import safeyaml as yaml
 
 from cloudinit.tests.helpers import (
     CiTestCase, FilesystemMockingTestCase, dir2dict, mock, populate_dir)
@@ -19,8 +20,10 @@ import gzip
 import io
 import json
 import os
+import re
 import textwrap
-import yaml
+from yaml.serializer import Serializer
+
 
 DHCP_CONTENT_1 = """
 DEVICE='eth0'
@@ -78,7 +81,7 @@ DHCP6_EXPECTED_1 = {
 
 STATIC_CONTENT_1 = """
 DEVICE='eth1'
-PROTO='static'
+PROTO='none'
 IPV4ADDR='10.0.0.2'
 IPV4BROADCAST='10.0.0.255'
 IPV4NETMASK='255.255.255.0'
@@ -101,6 +104,357 @@ STATIC_EXPECTED_1 = {
                  'dns_nameservers': ['10.0.1.1'],
                  'address': '10.0.0.2'}],
 }
+
+V1_NAMESERVER_ALIAS = """
+config:
+-   id: eno1
+    mac_address: 08:94:ef:51:ae:e0
+    mtu: 1500
+    name: eno1
+    subnets:
+    -   type: manual
+    type: physical
+-   id: eno2
+    mac_address: 08:94:ef:51:ae:e1
+    mtu: 1500
+    name: eno2
+    subnets:
+    -   type: manual
+    type: physical
+-   id: eno3
+    mac_address: 08:94:ef:51:ae:de
+    mtu: 1500
+    name: eno3
+    subnets:
+    -   type: manual
+    type: physical
+-   bond_interfaces:
+    - eno1
+    - eno3
+    id: bondM
+    mac_address: 08:94:ef:51:ae:e0
+    mtu: 1500
+    name: bondM
+    params:
+        bond-downdelay: 0
+        bond-lacp-rate: fast
+        bond-miimon: 100
+        bond-mode: 802.3ad
+        bond-updelay: 0
+        bond-xmit-hash-policy: layer3+4
+    subnets:
+    -   address: 10.101.10.47/23
+        gateway: 10.101.11.254
+        type: static
+    type: bond
+-   id: eno4
+    mac_address: 08:94:ef:51:ae:df
+    mtu: 1500
+    name: eno4
+    subnets:
+    -   type: manual
+    type: physical
+-   id: enp0s20f0u1u6
+    mac_address: 0a:94:ef:51:a4:b9
+    mtu: 1500
+    name: enp0s20f0u1u6
+    subnets:
+    -   type: manual
+    type: physical
+-   id: enp216s0f0
+    mac_address: 68:05:ca:81:7c:e8
+    mtu: 9000
+    name: enp216s0f0
+    subnets:
+    -   type: manual
+    type: physical
+-   id: enp216s0f1
+    mac_address: 68:05:ca:81:7c:e9
+    mtu: 9000
+    name: enp216s0f1
+    subnets:
+    -   type: manual
+    type: physical
+-   id: enp47s0f0
+    mac_address: 68:05:ca:64:d3:6c
+    mtu: 9000
+    name: enp47s0f0
+    subnets:
+    -   type: manual
+    type: physical
+-   bond_interfaces:
+    - enp216s0f0
+    - enp47s0f0
+    id: bond0
+    mac_address: 68:05:ca:64:d3:6c
+    mtu: 9000
+    name: bond0
+    params:
+        bond-downdelay: 0
+        bond-lacp-rate: fast
+        bond-miimon: 100
+        bond-mode: 802.3ad
+        bond-updelay: 0
+        bond-xmit-hash-policy: layer3+4
+    subnets:
+    -   type: manual
+    type: bond
+-   id: bond0.3502
+    mtu: 9000
+    name: bond0.3502
+    subnets:
+    -   address: 172.20.80.4/25
+        type: static
+    type: vlan
+    vlan_id: 3502
+    vlan_link: bond0
+-   id: bond0.3503
+    mtu: 9000
+    name: bond0.3503
+    subnets:
+    -   address: 172.20.80.129/25
+        type: static
+    type: vlan
+    vlan_id: 3503
+    vlan_link: bond0
+-   id: enp47s0f1
+    mac_address: 68:05:ca:64:d3:6d
+    mtu: 9000
+    name: enp47s0f1
+    subnets:
+    -   type: manual
+    type: physical
+-   bond_interfaces:
+    - enp216s0f1
+    - enp47s0f1
+    id: bond1
+    mac_address: 68:05:ca:64:d3:6d
+    mtu: 9000
+    name: bond1
+    params:
+        bond-downdelay: 0
+        bond-lacp-rate: fast
+        bond-miimon: 100
+        bond-mode: 802.3ad
+        bond-updelay: 0
+        bond-xmit-hash-policy: layer3+4
+    subnets:
+    -   address: 10.101.8.65/26
+        routes:
+        -   destination: 213.119.192.0/24
+            gateway: 10.101.8.126
+            metric: 0
+        type: static
+    type: bond
+-   address:
+    - 10.101.10.1
+    - 10.101.10.2
+    - 10.101.10.3
+    - 10.101.10.5
+    search:
+    - foo.bar
+    - maas
+    type: nameserver
+version: 1
+"""
+
+NETPLAN_NO_ALIAS = """
+network:
+    version: 2
+    ethernets:
+        eno1:
+            match:
+                macaddress: 08:94:ef:51:ae:e0
+            mtu: 1500
+            set-name: eno1
+        eno2:
+            match:
+                macaddress: 08:94:ef:51:ae:e1
+            mtu: 1500
+            set-name: eno2
+        eno3:
+            match:
+                macaddress: 08:94:ef:51:ae:de
+            mtu: 1500
+            set-name: eno3
+        eno4:
+            match:
+                macaddress: 08:94:ef:51:ae:df
+            mtu: 1500
+            set-name: eno4
+        enp0s20f0u1u6:
+            match:
+                macaddress: 0a:94:ef:51:a4:b9
+            mtu: 1500
+            set-name: enp0s20f0u1u6
+        enp216s0f0:
+            match:
+                macaddress: 68:05:ca:81:7c:e8
+            mtu: 9000
+            set-name: enp216s0f0
+        enp216s0f1:
+            match:
+                macaddress: 68:05:ca:81:7c:e9
+            mtu: 9000
+            set-name: enp216s0f1
+        enp47s0f0:
+            match:
+                macaddress: 68:05:ca:64:d3:6c
+            mtu: 9000
+            set-name: enp47s0f0
+        enp47s0f1:
+            match:
+                macaddress: 68:05:ca:64:d3:6d
+            mtu: 9000
+            set-name: enp47s0f1
+    bonds:
+        bond0:
+            interfaces:
+            - enp216s0f0
+            - enp47s0f0
+            macaddress: 68:05:ca:64:d3:6c
+            mtu: 9000
+            parameters:
+                down-delay: 0
+                lacp-rate: fast
+                mii-monitor-interval: 100
+                mode: 802.3ad
+                transmit-hash-policy: layer3+4
+                up-delay: 0
+        bond1:
+            addresses:
+            - 10.101.8.65/26
+            interfaces:
+            - enp216s0f1
+            - enp47s0f1
+            macaddress: 68:05:ca:64:d3:6d
+            mtu: 9000
+            nameservers:
+                addresses:
+                - 10.101.10.1
+                - 10.101.10.2
+                - 10.101.10.3
+                - 10.101.10.5
+                search:
+                - foo.bar
+                - maas
+            parameters:
+                down-delay: 0
+                lacp-rate: fast
+                mii-monitor-interval: 100
+                mode: 802.3ad
+                transmit-hash-policy: layer3+4
+                up-delay: 0
+            routes:
+            -   metric: 0
+                to: 213.119.192.0/24
+                via: 10.101.8.126
+        bondM:
+            addresses:
+            - 10.101.10.47/23
+            gateway4: 10.101.11.254
+            interfaces:
+            - eno1
+            - eno3
+            macaddress: 08:94:ef:51:ae:e0
+            mtu: 1500
+            nameservers:
+                addresses:
+                - 10.101.10.1
+                - 10.101.10.2
+                - 10.101.10.3
+                - 10.101.10.5
+                search:
+                - foo.bar
+                - maas
+            parameters:
+                down-delay: 0
+                lacp-rate: fast
+                mii-monitor-interval: 100
+                mode: 802.3ad
+                transmit-hash-policy: layer3+4
+                up-delay: 0
+    vlans:
+        bond0.3502:
+            addresses:
+            - 172.20.80.4/25
+            id: 3502
+            link: bond0
+            mtu: 9000
+            nameservers:
+                addresses:
+                - 10.101.10.1
+                - 10.101.10.2
+                - 10.101.10.3
+                - 10.101.10.5
+                search:
+                - foo.bar
+                - maas
+        bond0.3503:
+            addresses:
+            - 172.20.80.129/25
+            id: 3503
+            link: bond0
+            mtu: 9000
+            nameservers:
+                addresses:
+                - 10.101.10.1
+                - 10.101.10.2
+                - 10.101.10.3
+                - 10.101.10.5
+                search:
+                - foo.bar
+                - maas
+"""
+
+NETPLAN_BOND_GRAT_ARP = """
+network:
+    bonds:
+        bond0:
+            interfaces:
+            - ens3
+            macaddress: 68:05:ca:64:d3:6c
+            mtu: 9000
+            parameters:
+                gratuitious-arp: 1
+        bond1:
+            interfaces:
+            - ens4
+            macaddress: 68:05:ca:64:d3:6d
+            mtu: 9000
+            parameters:
+                gratuitous-arp: 2
+    ethernets:
+        ens3:
+            dhcp4: false
+            dhcp6: false
+            match:
+                macaddress: 52:54:00:ab:cd:ef
+        ens4:
+            dhcp4: false
+            dhcp6: false
+            match:
+                macaddress: 52:54:00:11:22:ff
+    version: 2
+"""
+
+NETPLAN_DHCP_FALSE = """
+version: 2
+ethernets:
+  ens3:
+    match:
+      macaddress: 52:54:00:ab:cd:ef
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - 192.168.42.100/24
+      - 2001:db8::100/32
+    gateway4: 192.168.42.1
+    gateway6: 2001:db8::1
+    nameservers:
+      search: [example.com]
+      addresses: [192.168.42.53, 1.1.1.1]
+"""
 
 # Examples (and expected outputs for various renderers).
 OS_SAMPLES = [
@@ -135,17 +489,11 @@ OS_SAMPLES = [
              """
 # Created by cloud-init on instance boot automatically, do not edit.
 #
-BOOTPROTO=none
-DEFROUTE=yes
-DEVICE=eth0
-GATEWAY=172.19.3.254
-HWADDR=fa:16:3e:ed:9a:59
+BOOTPROTO=static
 IPADDR=172.19.1.34
+LLADDR=fa:16:3e:ed:9a:59
 NETMASK=255.255.252.0
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+STARTMODE=auto
 """.lstrip()),
             ('etc/resolv.conf',
              """
@@ -160,7 +508,7 @@ nameserver 172.19.0.12
 [main]
 dns = none
 """.lstrip()),
-            ('etc/udev/rules.d/70-persistent-net.rules',
+            ('etc/udev/rules.d/85-persistent-net-cloud-init.rules',
              "".join(['SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ',
                       'ATTR{address}=="fa:16:3e:ed:9a:59", NAME="eth0"\n']))],
         'out_sysconfig_rhel': [
@@ -235,19 +583,13 @@ dns = none
              """
 # Created by cloud-init on instance boot automatically, do not edit.
 #
-BOOTPROTO=none
-DEFROUTE=yes
-DEVICE=eth0
-GATEWAY=172.19.3.254
-HWADDR=fa:16:3e:ed:9a:59
+BOOTPROTO=static
 IPADDR=172.19.1.34
 IPADDR1=10.0.0.10
+LLADDR=fa:16:3e:ed:9a:59
 NETMASK=255.255.252.0
 NETMASK1=255.255.255.0
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+STARTMODE=auto
 """.lstrip()),
             ('etc/resolv.conf',
              """
@@ -262,7 +604,7 @@ nameserver 172.19.0.12
 [main]
 dns = none
 """.lstrip()),
-            ('etc/udev/rules.d/70-persistent-net.rules',
+            ('etc/udev/rules.d/85-persistent-net-cloud-init.rules',
              "".join(['SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ',
                       'ATTR{address}=="fa:16:3e:ed:9a:59", NAME="eth0"\n']))],
         'out_sysconfig_rhel': [
@@ -359,21 +701,14 @@ dns = none
              """
 # Created by cloud-init on instance boot automatically, do not edit.
 #
-BOOTPROTO=none
-DEFROUTE=yes
-DEVICE=eth0
-GATEWAY=172.19.3.254
-HWADDR=fa:16:3e:ed:9a:59
+BOOTPROTO=static
 IPADDR=172.19.1.34
-IPV6ADDR=2001:DB8::10/64
-IPV6ADDR_SECONDARIES="2001:DB9::10/64 2001:DB10::10/64"
-IPV6INIT=yes
-IPV6_DEFAULTGW=2001:DB8::1
+IPADDR6=2001:DB8::10/64
+IPADDR6_1=2001:DB9::10/64
+IPADDR6_2=2001:DB10::10/64
+LLADDR=fa:16:3e:ed:9a:59
 NETMASK=255.255.252.0
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+STARTMODE=auto
 """.lstrip()),
             ('etc/resolv.conf',
              """
@@ -388,7 +723,7 @@ nameserver 172.19.0.12
 [main]
 dns = none
 """.lstrip()),
-            ('etc/udev/rules.d/70-persistent-net.rules',
+            ('etc/udev/rules.d/85-persistent-net-cloud-init.rules',
              "".join(['SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ',
                       'ATTR{address}=="fa:16:3e:ed:9a:59", NAME="eth0"\n']))],
         'out_sysconfig_rhel': [
@@ -518,7 +853,19 @@ NETWORK_CONFIGS = {
                             via: 65.61.151.37
                         set-name: eth99
         """).rstrip(' '),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-eth1': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=cf:d6:af:48:e8:80
+                STARTMODE=auto"""),
+            'ifcfg-eth99': textwrap.dedent("""\
+                BOOTPROTO=dhcp4
+                LLADDR=c0:d6:9f:2c:e8:80
+                IPADDR=192.168.21.3
+                NETMASK=255.255.255.0
+                STARTMODE=auto"""),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-eth1': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=eth1
@@ -531,6 +878,7 @@ NETWORK_CONFIGS = {
                 BOOTPROTO=dhcp
                 DEFROUTE=yes
                 DEVICE=eth99
+                DHCLIENT_SET_DEFAULT_ROUTE=yes
                 DNS1=8.8.8.8
                 DNS2=8.8.4.4
                 DOMAIN="barley.maas sach.maas"
@@ -594,6 +942,12 @@ NETWORK_CONFIGS = {
                         dhcp4: true
                         dhcp6: true
         """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0':  textwrap.dedent("""\
+                BOOTPROTO=dhcp
+                DHCLIENT6_MODE=managed
+                STARTMODE=auto""")
+        },
         'yaml': textwrap.dedent("""\
             version: 1
             config:
@@ -627,8 +981,8 @@ NETWORK_CONFIGS = {
                         addresses:
                         - 192.168.14.2/24
                         - 2001:1::1/64
+                        ipv6-mtu: 1500
                         mtu: 9000
-                        mtu6: 1500
         """).rstrip(' '),
         'yaml': textwrap.dedent("""\
             version: 1
@@ -644,7 +998,17 @@ NETWORK_CONFIGS = {
                     address: 2001:1::1/64
                     mtu: 1500
         """).rstrip(' '),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=static
+                IPADDR=192.168.14.2
+                IPADDR6=2001:1::1/64
+                NETMASK=255.255.255.0
+                STARTMODE=auto
+                MTU=9000
+                """),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-iface0': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=iface0
@@ -660,6 +1024,23 @@ NETWORK_CONFIGS = {
                 IPV6_MTU=1500
                 """),
         },
+    },
+    'v6_and_v4': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0':  textwrap.dedent("""\
+                BOOTPROTO=dhcp
+                DHCLIENT6_MODE=managed
+                STARTMODE=auto""")
+        },
+        'yaml': textwrap.dedent("""\
+            version: 1
+            config:
+              - type: 'physical'
+                name: 'iface0'
+                subnets:
+                  - type: dhcp6
+                  - type: dhcp4
+        """).rstrip(' '),
     },
     'dhcpv6_only': {
         'expected_eni': textwrap.dedent("""\
@@ -684,7 +1065,14 @@ NETWORK_CONFIGS = {
                 subnets:
                 - {'type': 'dhcp6'}
         """).rstrip(' '),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=dhcp6
+                DHCLIENT6_MODE=managed
+                STARTMODE=auto
+                """),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-iface0': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=iface0
@@ -696,6 +1084,255 @@ NETWORK_CONFIGS = {
                 TYPE=Ethernet
                 USERCTL=no
                 """),
+        },
+    },
+    'dhcpv6_accept_ra': {
+        'expected_eni': textwrap.dedent("""\
+            auto lo
+            iface lo inet loopback
+
+            auto iface0
+            iface iface0 inet6 dhcp
+                accept_ra 1
+        """).rstrip(' '),
+        'expected_netplan': textwrap.dedent("""
+            network:
+                version: 2
+                ethernets:
+                    iface0:
+                        accept-ra: true
+                        dhcp6: true
+        """).rstrip(' '),
+        'yaml_v1': textwrap.dedent("""\
+            version: 1
+            config:
+              - type: 'physical'
+                name: 'iface0'
+                subnets:
+                - {'type': 'dhcp6'}
+                accept-ra: true
+        """).rstrip(' '),
+        'yaml_v2': textwrap.dedent("""\
+            version: 2
+            ethernets:
+                iface0:
+                    dhcp6: true
+                    accept-ra: true
+        """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=dhcp6
+                DHCLIENT6_MODE=managed
+                STARTMODE=auto
+            """),
+        },
+        'expected_sysconfig_rhel': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=iface0
+                DHCPV6C=yes
+                IPV6INIT=yes
+                IPV6_FORCE_ACCEPT_RA=yes
+                DEVICE=iface0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Ethernet
+                USERCTL=no
+            """),
+        },
+    },
+    'dhcpv6_reject_ra': {
+        'expected_eni': textwrap.dedent("""\
+            auto lo
+            iface lo inet loopback
+
+            auto iface0
+            iface iface0 inet6 dhcp
+                accept_ra 0
+        """).rstrip(' '),
+        'expected_netplan': textwrap.dedent("""
+            network:
+                version: 2
+                ethernets:
+                    iface0:
+                        accept-ra: false
+                        dhcp6: true
+        """).rstrip(' '),
+        'yaml_v1': textwrap.dedent("""\
+            version: 1
+            config:
+            - type: 'physical'
+              name: 'iface0'
+              subnets:
+              - {'type': 'dhcp6'}
+              accept-ra: false
+        """).rstrip(' '),
+        'yaml_v2': textwrap.dedent("""\
+            version: 2
+            ethernets:
+                iface0:
+                    dhcp6: true
+                    accept-ra: false
+        """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=dhcp6
+                DHCLIENT6_MODE=managed
+                STARTMODE=auto
+            """),
+        },
+        'expected_sysconfig_rhel': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=iface0
+                DHCPV6C=yes
+                IPV6INIT=yes
+                IPV6_FORCE_ACCEPT_RA=no
+                DEVICE=iface0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Ethernet
+                USERCTL=no
+            """),
+        },
+    },
+    'ipv6_slaac': {
+        'expected_eni': textwrap.dedent("""\
+            auto lo
+            iface lo inet loopback
+
+            auto iface0
+            iface iface0 inet6 auto
+                dhcp 0
+        """).rstrip(' '),
+        'expected_netplan': textwrap.dedent("""
+            network:
+                version: 2
+                ethernets:
+                    iface0:
+                        dhcp6: true
+        """).rstrip(' '),
+        'yaml': textwrap.dedent("""\
+            version: 1
+            config:
+            - type: 'physical'
+              name: 'iface0'
+              subnets:
+              - {'type': 'ipv6_slaac'}
+        """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=dhcp6
+                DHCLIENT6_MODE=info
+                STARTMODE=auto
+            """),
+        },
+        'expected_sysconfig_rhel': {
+            'ifcfg-iface0': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=iface0
+                IPV6_AUTOCONF=yes
+                IPV6INIT=yes
+                DEVICE=iface0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Ethernet
+                USERCTL=no
+            """),
+        },
+    },
+    'dhcpv6_stateless': {
+        'expected_eni': textwrap.dedent("""\
+        auto lo
+        iface lo inet loopback
+
+        auto iface0
+        iface iface0 inet6 auto
+            dhcp 1
+    """).rstrip(' '),
+        'expected_netplan': textwrap.dedent("""
+        network:
+            version: 2
+            ethernets:
+                iface0:
+                    dhcp6: true
+    """).rstrip(' '),
+        'yaml': textwrap.dedent("""\
+        version: 1
+        config:
+          - type: 'physical'
+            name: 'iface0'
+            subnets:
+            - {'type': 'ipv6_dhcpv6-stateless'}
+    """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+            BOOTPROTO=dhcp6
+            DHCLIENT6_MODE=info
+            STARTMODE=auto
+            """),
+        },
+        'expected_sysconfig_rhel': {
+            'ifcfg-iface0': textwrap.dedent("""\
+            BOOTPROTO=none
+            DEVICE=iface0
+            DHCPV6C=yes
+            DHCPV6C_OPTIONS=-S
+            IPV6_AUTOCONF=yes
+            IPV6INIT=yes
+            DEVICE=iface0
+            NM_CONTROLLED=no
+            ONBOOT=yes
+            TYPE=Ethernet
+            USERCTL=no
+            """),
+        },
+    },
+    'dhcpv6_stateful': {
+        'expected_eni': textwrap.dedent("""\
+        auto lo
+        iface lo inet loopback
+
+        auto iface0
+        iface iface0 inet6 dhcp
+    """).rstrip(' '),
+        'expected_netplan': textwrap.dedent("""
+        network:
+            version: 2
+            ethernets:
+                iface0:
+                    accept-ra: true
+                    dhcp6: true
+    """).rstrip(' '),
+        'yaml': textwrap.dedent("""\
+        version: 1
+        config:
+          - type: 'physical'
+            name: 'iface0'
+            subnets:
+            - {'type': 'ipv6_dhcpv6-stateful'}
+            accept-ra: true
+    """).rstrip(' '),
+        'expected_sysconfig_opensuse': {
+            'ifcfg-iface0': textwrap.dedent("""\
+            BOOTPROTO=dhcp6
+            DHCLIENT6_MODE=managed
+            STARTMODE=auto
+            """),
+        },
+        'expected_sysconfig_rhel': {
+            'ifcfg-iface0': textwrap.dedent("""\
+            BOOTPROTO=none
+            DEVICE=iface0
+            DHCPV6C=yes
+            IPV6INIT=yes
+            IPV6_FORCE_ACCEPT_RA=yes
+            DEVICE=iface0
+            NM_CONTROLLED=no
+            ONBOOT=yes
+            TYPE=Ethernet
+            USERCTL=no
+            """),
         },
     },
     'all': {
@@ -727,6 +1364,12 @@ iface eth4 inet manual
 
 # control-manual eth5
 iface eth5 inet dhcp
+
+auto ib0
+iface ib0 inet static
+    address 192.168.200.7/24
+    mtu 9000
+    hwaddress a0:00:02:20:fe:80:00:00:00:00:00:00:ec:0d:9a:03:00:15:e2:c1
 
 auto bond0
 iface bond0 inet6 dhcp
@@ -781,8 +1424,8 @@ iface eth0.101 inet static
 iface eth0.101 inet static
     address 192.168.2.10/24
 
-post-up route add -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
-pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
+post-up route add -net 10.0.0.0/8 gw 11.0.0.1 metric 3 || true
+pre-down route del -net 10.0.0.0/8 gw 11.0.0.1 metric 3 || true
 """),
         'expected_netplan': textwrap.dedent("""
             network:
@@ -881,7 +1524,80 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                             - sacchromyces.maas
                             - brettanomyces.maas
         """).rstrip(' '),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-bond0': textwrap.dedent("""\
+                BONDING_MASTER=yes
+                BONDING_OPTS="mode=active-backup """
+                                           """xmit_hash_policy=layer3+4 """
+                                           """miimon=100"
+                BONDING_SLAVE_0=eth1
+                BONDING_SLAVE_1=eth2
+                BOOTPROTO=dhcp6
+                DHCLIENT6_MODE=managed
+                LLADDR=aa:bb:cc:dd:ee:ff
+                STARTMODE=auto"""),
+            'ifcfg-bond0.200': textwrap.dedent("""\
+                BOOTPROTO=dhcp4
+                ETHERDEVICE=bond0
+                STARTMODE=auto
+                VLAN_ID=200"""),
+            'ifcfg-br0': textwrap.dedent("""\
+                BRIDGE_AGEINGTIME=250
+                BOOTPROTO=static
+                IPADDR=192.168.14.2
+                IPADDR6=2001:1::1/64
+                LLADDRESS=bb:bb:bb:bb:bb:aa
+                NETMASK=255.255.255.0
+                BRIDGE_PRIORITY=22
+                BRIDGE_PORTS='eth3 eth4'
+                STARTMODE=auto
+                BRIDGE_STP=off"""),
+            'ifcfg-eth0': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=c0:d6:9f:2c:e8:80
+                STARTMODE=auto"""),
+            'ifcfg-eth0.101': textwrap.dedent("""\
+                BOOTPROTO=static
+                IPADDR=192.168.0.2
+                IPADDR1=192.168.2.10
+                MTU=1500
+                NETMASK=255.255.255.0
+                NETMASK1=255.255.255.0
+                ETHERDEVICE=eth0
+                STARTMODE=auto
+                VLAN_ID=101"""),
+            'ifcfg-eth1': textwrap.dedent("""\
+                BOOTPROTO=none
+                LLADDR=aa:d6:9f:2c:e8:80
+                STARTMODE=hotplug"""),
+            'ifcfg-eth2': textwrap.dedent("""\
+                BOOTPROTO=none
+                LLADDR=c0:bb:9f:2c:e8:80
+                STARTMODE=hotplug"""),
+            'ifcfg-eth3': textwrap.dedent("""\
+                BOOTPROTO=static
+                BRIDGE=yes
+                LLADDR=66:bb:9f:2c:e8:80
+                STARTMODE=auto"""),
+            'ifcfg-eth4': textwrap.dedent("""\
+                BOOTPROTO=static
+                BRIDGE=yes
+                LLADDR=98:bb:9f:2c:e8:80
+                STARTMODE=auto"""),
+            'ifcfg-eth5': textwrap.dedent("""\
+                BOOTPROTO=dhcp
+                LLADDR=98:bb:9f:2c:e8:8a
+                STARTMODE=manual"""),
+            'ifcfg-ib0': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=a0:00:02:20:fe:80:00:00:00:00:00:00:ec:0d:9a:03:00:15:e2:c1
+                IPADDR=192.168.200.7
+                MTU=9000
+                NETMASK=255.255.255.0
+                STARTMODE=auto
+                TYPE=InfiniBand"""),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-bond0': textwrap.dedent("""\
                 BONDING_MASTER=yes
                 BONDING_OPTS="mode=active-backup """
@@ -901,6 +1617,7 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
             'ifcfg-bond0.200': textwrap.dedent("""\
                 BOOTPROTO=dhcp
                 DEVICE=bond0.200
+                DHCLIENT_SET_DEFAULT_ROUTE=no
                 NM_CONTROLLED=no
                 ONBOOT=yes
                 PHYSDEV=bond0
@@ -992,11 +1709,23 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
             'ifcfg-eth5': textwrap.dedent("""\
                 BOOTPROTO=dhcp
                 DEVICE=eth5
+                DHCLIENT_SET_DEFAULT_ROUTE=no
                 HWADDR=98:bb:9f:2c:e8:8a
                 NM_CONTROLLED=no
                 ONBOOT=no
                 TYPE=Ethernet
-                USERCTL=no""")
+                USERCTL=no"""),
+            'ifcfg-ib0': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=ib0
+                HWADDR=a0:00:02:20:fe:80:00:00:00:00:00:00:ec:0d:9a:03:00:15:e2:c1
+                IPADDR=192.168.200.7
+                MTU=9000
+                NETMASK=255.255.255.0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=InfiniBand
+                USERCTL=no"""),
         },
         'yaml': textwrap.dedent("""
             version: 1
@@ -1071,6 +1800,15 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                   vlan_id: 200
                   subnets:
                       - type: dhcp4
+                # An infiniband
+                - type: infiniband
+                  name: ib0
+                  mac_address: >-
+                    a0:00:02:20:fe:80:00:00:00:00:00:00:ec:0d:9a:03:00:15:e2:c1
+                  subnets:
+                      - type: static
+                        address: 192.168.200.7/24
+                        mtu: 9000
                 # A bridge.
                 - type: bridge
                   name: br0
@@ -1155,6 +1893,12 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                   bond-mode: active-backup
                   bond_miimon: 100
                   bond-xmit-hash-policy: "layer3+4"
+                  bond-num-grat-arp: 5
+                  bond-downdelay: 10
+                  bond-updelay: 20
+                  bond-fail-over-mac: active
+                  bond-primary: bond0s0
+                  bond-primary-reselect: always
                 subnets:
                   - type: static
                     address: 192.168.0.2/24
@@ -1163,17 +1907,18 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                      - gateway: 192.168.0.3
                        netmask: 255.255.255.0
                        network: 10.1.3.0
-                     - gateway: 2001:67c:1562:1
-                       network: 2001:67c:1
-                       netmask: ffff:ffff:0
-                     - gateway: 3001:67c:1562:1
-                       network: 3001:67c:1
-                       netmask: ffff:ffff:0
-                       metric: 10000
                   - type: static
                     address: 192.168.1.2/24
                   - type: static
                     address: 2001:1::1/92
+                    routes:
+                        - gateway: 2001:67c:1562:1
+                          network: 2001:67c:1
+                          netmask: ffff:ffff:0
+                        - gateway: 3001:67c:1562:1
+                          network: 3001:67c:1
+                          netmask: ffff:ffff:0
+                          metric: 10000
             """),
         'expected_netplan': textwrap.dedent("""
          network:
@@ -1200,9 +1945,15 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                      macaddress: aa:bb:cc:dd:e8:ff
                      mtu: 9000
                      parameters:
+                         down-delay: 10
+                         fail-over-mac-policy: active
+                         gratuitious-arp: 5
                          mii-monitor-interval: 100
                          mode: active-backup
+                         primary: bond0s0
+                         primary-reselect-policy: always
                          transmit-hash-policy: layer3+4
+                         up-delay: 20
                      routes:
                      -   to: 10.1.3.0/24
                          via: 192.168.0.3
@@ -1211,6 +1962,69 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                      -   metric: 10000
                          to: 3001:67c:1/32
                          via: 3001:67c:1562:1
+        """),
+        'expected_eni': textwrap.dedent("""\
+auto lo
+iface lo inet loopback
+
+auto bond0s0
+iface bond0s0 inet manual
+    bond-downdelay 10
+    bond-fail-over-mac active
+    bond-master bond0
+    bond-mode active-backup
+    bond-num-grat-arp 5
+    bond-primary bond0s0
+    bond-primary-reselect always
+    bond-updelay 20
+    bond-xmit-hash-policy layer3+4
+    bond_miimon 100
+
+auto bond0s1
+iface bond0s1 inet manual
+    bond-downdelay 10
+    bond-fail-over-mac active
+    bond-master bond0
+    bond-mode active-backup
+    bond-num-grat-arp 5
+    bond-primary bond0s0
+    bond-primary-reselect always
+    bond-updelay 20
+    bond-xmit-hash-policy layer3+4
+    bond_miimon 100
+
+auto bond0
+iface bond0 inet static
+    address 192.168.0.2/24
+    gateway 192.168.0.1
+    bond-downdelay 10
+    bond-fail-over-mac active
+    bond-mode active-backup
+    bond-num-grat-arp 5
+    bond-primary bond0s0
+    bond-primary-reselect always
+    bond-slaves none
+    bond-updelay 20
+    bond-xmit-hash-policy layer3+4
+    bond_miimon 100
+    hwaddress aa:bb:cc:dd:e8:ff
+    mtu 9000
+    post-up route add -net 10.1.3.0/24 gw 192.168.0.3 || true
+    pre-down route del -net 10.1.3.0/24 gw 192.168.0.3 || true
+
+# control-alias bond0
+iface bond0 inet static
+    address 192.168.1.2/24
+
+# control-alias bond0
+iface bond0 inet6 static
+    address 2001:1::1/92
+    post-up route add -A inet6 2001:67c:1/32 gw 2001:67c:1562:1 || true
+    pre-down route del -A inet6 2001:67c:1/32 gw 2001:67c:1562:1 || true
+    post-up route add -A inet6 3001:67c:1/32 gw 3001:67c:1562:1 metric 10000 \
+|| true
+    pre-down route del -A inet6 3001:67c:1/32 gw 3001:67c:1562:1 metric 10000 \
+|| true
         """),
         'yaml-v2': textwrap.dedent("""
             version: 2
@@ -1235,10 +2049,15 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                 - eth0
                 - vf0
                 parameters:
+                    down-delay: 10
+                    fail-over-mac-policy: active
+                    gratuitious-arp: 5
                     mii-monitor-interval: 100
                     mode: active-backup
-                    primary: vf0
-                    transmit-hash-policy: "layer3+4"
+                    primary: bond0s0
+                    primary-reselect-policy: always
+                    transmit-hash-policy: layer3+4
+                    up-delay: 20
                 routes:
                 -   to: 10.1.3.0/24
                     via: 192.168.0.3
@@ -1261,10 +2080,15 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                      - eth0
                      - vf0
                      parameters:
+                         down-delay: 10
+                         fail-over-mac-policy: active
+                         gratuitious-arp: 5
                          mii-monitor-interval: 100
                          mode: active-backup
-                         primary: vf0
+                         primary: bond0s0
+                         primary-reselect-policy: always
                          transmit-hash-policy: layer3+4
+                         up-delay: 20
                      routes:
                      -   to: 10.1.3.0/24
                          via: 192.168.0.3
@@ -1289,59 +2113,44 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
         'expected_sysconfig_opensuse': {
             'ifcfg-bond0': textwrap.dedent("""\
         BONDING_MASTER=yes
-        BONDING_OPTS="mode=active-backup xmit_hash_policy=layer3+4 miimon=100"
-        BONDING_SLAVE0=bond0s0
-        BONDING_SLAVE1=bond0s1
-        BOOTPROTO=none
-        DEFROUTE=yes
-        DEVICE=bond0
-        GATEWAY=192.168.0.1
-        MACADDR=aa:bb:cc:dd:e8:ff
+        BONDING_OPTS="mode=active-backup xmit_hash_policy=layer3+4 """
+                                           """miimon=100 num_grat_arp=5 """
+                                           """downdelay=10 updelay=20 """
+                                           """fail_over_mac=active """
+                                           """primary=bond0s0 """
+                                           """primary_reselect=always"
+        BONDING_SLAVE_0=bond0s0
+        BONDING_SLAVE_1=bond0s1
+        BOOTPROTO=static
+        LLADDR=aa:bb:cc:dd:e8:ff
         IPADDR=192.168.0.2
         IPADDR1=192.168.1.2
-        IPV6ADDR=2001:1::1/92
-        IPV6INIT=yes
+        IPADDR6=2001:1::1/92
         MTU=9000
         NETMASK=255.255.255.0
         NETMASK1=255.255.255.0
-        NM_CONTROLLED=no
-        ONBOOT=yes
-        TYPE=Bond
-        USERCTL=no
+        STARTMODE=auto
         """),
             'ifcfg-bond0s0': textwrap.dedent("""\
         BOOTPROTO=none
-        DEVICE=bond0s0
-        HWADDR=aa:bb:cc:dd:e8:00
-        MASTER=bond0
-        NM_CONTROLLED=no
-        ONBOOT=yes
-        SLAVE=yes
-        TYPE=Ethernet
-        USERCTL=no
-        """),
-            'ifroute-bond0': textwrap.dedent("""\
-        ADDRESS0=10.1.3.0
-        GATEWAY0=192.168.0.3
-        NETMASK0=255.255.255.0
+        LLADDR=aa:bb:cc:dd:e8:00
+        STARTMODE=hotplug
         """),
             'ifcfg-bond0s1': textwrap.dedent("""\
         BOOTPROTO=none
-        DEVICE=bond0s1
-        HWADDR=aa:bb:cc:dd:e8:01
-        MASTER=bond0
-        NM_CONTROLLED=no
-        ONBOOT=yes
-        SLAVE=yes
-        TYPE=Ethernet
-        USERCTL=no
+        LLADDR=aa:bb:cc:dd:e8:01
+        STARTMODE=hotplug
         """),
         },
-
         'expected_sysconfig_rhel': {
             'ifcfg-bond0': textwrap.dedent("""\
         BONDING_MASTER=yes
-        BONDING_OPTS="mode=active-backup xmit_hash_policy=layer3+4 miimon=100"
+        BONDING_OPTS="mode=active-backup xmit_hash_policy=layer3+4 """
+                                           """miimon=100 num_grat_arp=5 """
+                                           """downdelay=10 updelay=20 """
+                                           """fail_over_mac=active """
+                                           """primary=bond0s0 """
+                                           """primary_reselect=always"
         BONDING_SLAVE0=bond0s0
         BONDING_SLAVE1=bond0s1
         BOOTPROTO=none
@@ -1421,7 +2230,26 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                        netmask: '::'
                        network: '::'
             """),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            # TODO RJS: unknown proper BOOTPROTO setting ask Marius
+            'ifcfg-en0': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=aa:bb:cc:dd:e8:00
+                STARTMODE=auto"""),
+            'ifcfg-en0.99': textwrap.dedent("""\
+                BOOTPROTO=static
+                IPADDR=192.168.2.2
+                IPADDR1=192.168.1.2
+                IPADDR6=2001:1::bbbb/96
+                MTU=2222
+                NETMASK=255.255.255.0
+                NETMASK1=255.255.255.0
+                STARTMODE=auto
+                ETHERDEVICE=en0
+                VLAN_ID=99
+            """),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-en0': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=en0
@@ -1478,7 +2306,32 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                 subnets:
                   - type: static
                     address: 192.168.2.2/24"""),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-br0': textwrap.dedent("""\
+                BOOTPROTO=static
+                IPADDR=192.168.2.2
+                NETMASK=255.255.255.0
+                STARTMODE=auto
+                BRIDGE_STP=off
+                BRIDGE_PRIORITY=22
+                BRIDGE_PORTS='eth0 eth1'
+                """),
+            'ifcfg-eth0': textwrap.dedent("""\
+                BOOTPROTO=static
+                BRIDGE=yes
+                LLADDR=52:54:00:12:34:00
+                IPADDR6=2001:1::100/96
+                STARTMODE=auto
+                """),
+            'ifcfg-eth1': textwrap.dedent("""\
+                BOOTPROTO=static
+                BRIDGE=yes
+                LLADDR=52:54:00:12:34:01
+                IPADDR6=2001:1::101/96
+                STARTMODE=auto
+                """),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-br0': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=br0
@@ -1577,7 +2430,27 @@ pre-down route del -net 10.0.0.0 netmask 255.0.0.0 gw 11.0.0.1 metric 3 || true
                             macaddress: 52:54:00:12:34:ff
                         set-name: eth2
             """),
-        'expected_sysconfig': {
+        'expected_sysconfig_opensuse': {
+            'ifcfg-eth0': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=52:54:00:12:34:00
+                IPADDR=192.168.1.2
+                NETMASK=255.255.255.0
+                STARTMODE=manual
+                """),
+            'ifcfg-eth1': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=52:54:00:12:34:aa
+                MTU=1480
+                STARTMODE=auto
+                """),
+            'ifcfg-eth2': textwrap.dedent("""\
+                BOOTPROTO=static
+                LLADDR=52:54:00:12:34:ff
+                STARTMODE=manual
+                """),
+        },
+        'expected_sysconfig_rhel': {
             'ifcfg-eth0': textwrap.dedent("""\
                 BOOTPROTO=none
                 DEVICE=eth0
@@ -1632,6 +2505,23 @@ CONFIG_V1_SIMPLE_SUBNET = {
                              'type': 'static'}],
                 'type': 'physical'}]}
 
+CONFIG_V1_MULTI_IFACE = {
+    'version': 1,
+    'config': [{'type': 'physical',
+                'mtu': 1500,
+                'subnets': [{'type': 'static',
+                             'netmask': '255.255.240.0',
+                             'routes': [{'netmask': '0.0.0.0',
+                                         'network': '0.0.0.0',
+                                         'gateway': '51.68.80.1'}],
+                             'address': '51.68.89.122',
+                             'ipv4': True}],
+                'mac_address': 'fa:16:3e:25:b4:59',
+                'name': 'eth0'},
+               {'type': 'physical',
+                'mtu': 9000,
+                'subnets': [{'type': 'dhcp4'}],
+                'mac_address': 'fa:16:3e:b1:ca:29', 'name': 'eth1'}]}
 
 DEFAULT_DEV_ATTRS = {
     'eth1000': {
@@ -1639,7 +2529,7 @@ DEFAULT_DEV_ATTRS = {
         "carrier": False,
         "dormant": False,
         "operstate": "down",
-        "address": "07-1C-C6-75-A4-BE",
+        "address": "07-1c-c6-75-a4-be",
         "device/driver": None,
         "device/device": None,
         "name_assign_type": "4",
@@ -1686,6 +2576,39 @@ class TestGenerateFallbackConfig(CiTestCase):
         self.add_patch(
             "cloudinit.util.get_cmdline", "m_get_cmdline",
             return_value="root=/dev/sda1")
+
+    @mock.patch("cloudinit.net.sys_dev_path")
+    @mock.patch("cloudinit.net.read_sys_net")
+    @mock.patch("cloudinit.net.get_devicelist")
+    def test_device_driver_v2(self, mock_get_devicelist, mock_read_sys_net,
+                              mock_sys_dev_path):
+        """Network configuration for generate_fallback_config is version 2."""
+        devices = {
+            'eth0': {
+                'bridge': False, 'carrier': False, 'dormant': False,
+                'operstate': 'down', 'address': '00:11:22:33:44:55',
+                'device/driver': 'hv_netsvc', 'device/device': '0x3',
+                'name_assign_type': '4'},
+            'eth1': {
+                'bridge': False, 'carrier': False, 'dormant': False,
+                'operstate': 'down', 'address': '00:11:22:33:44:55',
+                'device/driver': 'mlx4_core', 'device/device': '0x7',
+                'name_assign_type': '4'},
+
+        }
+
+        tmp_dir = self.tmp_dir()
+        _setup_test(tmp_dir, mock_get_devicelist,
+                    mock_read_sys_net, mock_sys_dev_path,
+                    dev_attrs=devices)
+
+        network_cfg = net.generate_fallback_config(config_driver=True)
+        expected = {
+            'ethernets': {'eth0': {'dhcp4': True, 'set-name': 'eth0',
+                                   'match': {'macaddress': '00:11:22:33:44:55',
+                                             'driver': 'hv_netsvc'}}},
+            'version': 2}
+        self.assertEqual(expected, network_cfg)
 
     @mock.patch("cloudinit.net.sys_dev_path")
     @mock.patch("cloudinit.net.read_sys_net")
@@ -1880,11 +2803,12 @@ class TestRhelSysConfigRendering(CiTestCase):
 
     with_logs = True
 
+    nm_cfg_file = "/etc/NetworkManager/NetworkManager.conf"
     scripts_dir = '/etc/sysconfig/network-scripts'
     header = ('# Created by cloud-init on instance boot automatically, '
               'do not edit.\n#\n')
 
-    expected_name = 'expected_sysconfig'
+    expected_name = 'expected_sysconfig_rhel'
 
     def _get_renderer(self):
         distro_cls = distros.fetch('rhel')
@@ -1968,7 +2892,7 @@ class TestRhelSysConfigRendering(CiTestCase):
 #
 BOOTPROTO=dhcp
 DEVICE=eth1000
-HWADDR=07-1C-C6-75-A4-BE
+HWADDR=07-1c-c6-75-a4-be
 NM_CONTROLLED=no
 ONBOOT=yes
 TYPE=Ethernet
@@ -2096,11 +3020,60 @@ TYPE=Ethernet
 USERCTL=no
 """
         self.assertEqual(expected, found[nspath + 'ifcfg-interface0'])
+        # The configuration has no nameserver information make sure we
+        # do not write the resolv.conf file
+        respath = '/etc/resolv.conf'
+        self.assertNotIn(respath, found.keys())
+
+    def test_network_config_v1_multi_iface_samples(self):
+        ns = network_state.parse_net_config_data(CONFIG_V1_MULTI_IFACE)
+        render_dir = self.tmp_path("render")
+        os.makedirs(render_dir)
+        renderer = self._get_renderer()
+        renderer.render_network_state(ns, target=render_dir)
+        found = dir2dict(render_dir)
+        nspath = '/etc/sysconfig/network-scripts/'
+        self.assertNotIn(nspath + 'ifcfg-lo', found.keys())
+        expected_i1 = """\
+# Created by cloud-init on instance boot automatically, do not edit.
+#
+BOOTPROTO=none
+DEFROUTE=yes
+DEVICE=eth0
+GATEWAY=51.68.80.1
+HWADDR=fa:16:3e:25:b4:59
+IPADDR=51.68.89.122
+MTU=1500
+NETMASK=255.255.240.0
+NM_CONTROLLED=no
+ONBOOT=yes
+TYPE=Ethernet
+USERCTL=no
+"""
+        self.assertEqual(expected_i1, found[nspath + 'ifcfg-eth0'])
+        expected_i2 = """\
+# Created by cloud-init on instance boot automatically, do not edit.
+#
+BOOTPROTO=dhcp
+DEVICE=eth1
+DHCLIENT_SET_DEFAULT_ROUTE=no
+HWADDR=fa:16:3e:b1:ca:29
+MTU=9000
+NM_CONTROLLED=no
+ONBOOT=yes
+TYPE=Ethernet
+USERCTL=no
+"""
+        self.assertEqual(expected_i2, found[nspath + 'ifcfg-eth1'])
 
     def test_config_with_explicit_loopback(self):
         ns = network_state.parse_net_config_data(CONFIG_V1_EXPLICIT_LOOPBACK)
         render_dir = self.tmp_path("render")
         os.makedirs(render_dir)
+        # write an etc/resolv.conf and expect it to not be modified
+        resolvconf = os.path.join(render_dir, 'etc/resolv.conf')
+        resolvconf_content = "# Original Content"
+        util.write_file(resolvconf, resolvconf_content)
         renderer = self._get_renderer()
         renderer.render_network_state(ns, target=render_dir)
         found = dir2dict(render_dir)
@@ -2117,12 +3090,13 @@ TYPE=Ethernet
 USERCTL=no
 """
         self.assertEqual(expected, found[nspath + 'ifcfg-eth0'])
+        # a dhcp only config should not modify resolv.conf
+        self.assertEqual(resolvconf_content, found['/etc/resolv.conf'])
 
     def test_bond_config(self):
-        expected_name = 'expected_sysconfig_rhel'
         entry = NETWORK_CONFIGS['bond']
         found = self._render_and_read(network_config=yaml.load(entry['yaml']))
-        self._compare_files_to_expected(entry[expected_name], found)
+        self._compare_files_to_expected(entry[self.expected_name], found)
         self._assert_headers(found)
 
     def test_vlan_config(self):
@@ -2174,6 +3148,273 @@ USERCTL=no
         self._compare_files_to_expected(entry[self.expected_name], found)
         self._assert_headers(found)
 
+    def test_dhcpv6_accept_ra_config_v1(self):
+        entry = NETWORK_CONFIGS['dhcpv6_accept_ra']
+        found = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_accept_ra_config_v2(self):
+        entry = NETWORK_CONFIGS['dhcpv6_accept_ra']
+        found = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v2']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_reject_ra_config_v1(self):
+        entry = NETWORK_CONFIGS['dhcpv6_reject_ra']
+        found = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_reject_ra_config_v2(self):
+        entry = NETWORK_CONFIGS['dhcpv6_reject_ra']
+        found = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v2']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_stateless_config(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateless']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_stateful_config(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateful']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_check_ifcfg_rh(self):
+        """ifcfg-rh plugin is added NetworkManager.conf if conf present."""
+        render_dir = self.tmp_dir()
+        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        util.ensure_dir(os.path.dirname(nm_cfg))
+
+        # write a template nm.conf, note plugins is a list here
+        with open(nm_cfg, 'w') as fh:
+            fh.write('# test_check_ifcfg_rh\n[main]\nplugins=foo,bar\n')
+        self.assertTrue(os.path.exists(nm_cfg))
+
+        # render and read
+        entry = NETWORK_CONFIGS['small']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']),
+                                      dir=render_dir)
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+        # check ifcfg-rh is in the 'plugins' list
+        config = sysconfig.ConfigObj(nm_cfg)
+        self.assertIn('ifcfg-rh', config['main']['plugins'])
+
+    def test_check_ifcfg_rh_plugins_string(self):
+        """ifcfg-rh plugin is append when plugins is a string."""
+        render_dir = self.tmp_path("render")
+        os.makedirs(render_dir)
+        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        util.ensure_dir(os.path.dirname(nm_cfg))
+
+        # write a template nm.conf, note plugins is a value here
+        util.write_file(nm_cfg, '# test_check_ifcfg_rh\n[main]\nplugins=foo\n')
+
+        # render and read
+        entry = NETWORK_CONFIGS['small']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']),
+                                      dir=render_dir)
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+        # check raw content has plugin
+        nm_file_content = util.load_file(nm_cfg)
+        self.assertIn('ifcfg-rh', nm_file_content)
+
+        # check ifcfg-rh is in the 'plugins' list
+        config = sysconfig.ConfigObj(nm_cfg)
+        self.assertIn('ifcfg-rh', config['main']['plugins'])
+
+    def test_check_ifcfg_rh_plugins_no_plugins(self):
+        """enable_ifcfg_plugin creates plugins value if missing."""
+        render_dir = self.tmp_path("render")
+        os.makedirs(render_dir)
+        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        util.ensure_dir(os.path.dirname(nm_cfg))
+
+        # write a template nm.conf, note plugins is missing
+        util.write_file(nm_cfg, '# test_check_ifcfg_rh\n[main]\n')
+        self.assertTrue(os.path.exists(nm_cfg))
+
+        # render and read
+        entry = NETWORK_CONFIGS['small']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']),
+                                      dir=render_dir)
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+        # check ifcfg-rh is in the 'plugins' list
+        config = sysconfig.ConfigObj(nm_cfg)
+        self.assertIn('ifcfg-rh', config['main']['plugins'])
+
+    def test_netplan_dhcp_false_disable_dhcp_in_state(self):
+        """netplan config with dhcp[46]: False should not add dhcp in state"""
+        net_config = yaml.load(NETPLAN_DHCP_FALSE)
+        ns = network_state.parse_net_config_data(net_config,
+                                                 skip_broken=False)
+
+        dhcp_found = [snet for iface in ns.iter_interfaces()
+                      for snet in iface['subnets'] if 'dhcp' in snet['type']]
+
+        self.assertEqual([], dhcp_found)
+
+    def test_netplan_dhcp_false_no_dhcp_in_sysconfig(self):
+        """netplan cfg with dhcp[46]: False should not have bootproto=dhcp"""
+
+        entry = {
+            'yaml': NETPLAN_DHCP_FALSE,
+            'expected_sysconfig': {
+                'ifcfg-ens3': textwrap.dedent("""\
+                   BOOTPROTO=none
+                   DEFROUTE=yes
+                   DEVICE=ens3
+                   DNS1=192.168.42.53
+                   DNS2=1.1.1.1
+                   DOMAIN=example.com
+                   GATEWAY=192.168.42.1
+                   HWADDR=52:54:00:ab:cd:ef
+                   IPADDR=192.168.42.100
+                   IPV6ADDR=2001:db8::100/32
+                   IPV6INIT=yes
+                   IPV6_DEFAULTGW=2001:db8::1
+                   NETMASK=255.255.255.0
+                   NM_CONTROLLED=no
+                   ONBOOT=yes
+                   TYPE=Ethernet
+                   USERCTL=no
+                   """),
+            }
+        }
+
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry['expected_sysconfig'], found)
+        self._assert_headers(found)
+
+    def test_from_v2_vlan_mtu(self):
+        """verify mtu gets rendered on bond when source is netplan."""
+        v2data = {
+            'version': 2,
+            'ethernets': {'eno1': {}},
+            'vlans': {
+                'eno1.1000': {
+                    'addresses': ["192.6.1.9/24"],
+                    'id': 1000, 'link': 'eno1', 'mtu': 1495}}}
+        expected = {
+            'ifcfg-eno1': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=eno1
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Ethernet
+                USERCTL=no
+                """),
+            'ifcfg-eno1.1000': textwrap.dedent("""\
+                BOOTPROTO=none
+                DEVICE=eno1.1000
+                IPADDR=192.6.1.9
+                MTU=1495
+                NETMASK=255.255.255.0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                PHYSDEV=eno1
+                TYPE=Ethernet
+                USERCTL=no
+                VLAN=yes
+                """)
+            }
+        self._compare_files_to_expected(
+            expected, self._render_and_read(network_config=v2data))
+
+    def test_from_v2_bond_mtu(self):
+        """verify mtu gets rendered on bond when source is netplan."""
+        v2data = {
+            'version': 2,
+            'bonds': {
+                'bond0': {'addresses': ['10.101.8.65/26'],
+                          'interfaces': ['enp0s0', 'enp0s1'],
+                          'mtu': 1334,
+                          'parameters': {}}}
+        }
+        expected = {
+            'ifcfg-bond0': textwrap.dedent("""\
+                BONDING_MASTER=yes
+                BONDING_SLAVE0=enp0s0
+                BONDING_SLAVE1=enp0s1
+                BOOTPROTO=none
+                DEVICE=bond0
+                IPADDR=10.101.8.65
+                MTU=1334
+                NETMASK=255.255.255.192
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Bond
+                USERCTL=no
+                """),
+            'ifcfg-enp0s0': textwrap.dedent("""\
+                BONDING_MASTER=yes
+                BOOTPROTO=none
+                DEVICE=enp0s0
+                MASTER=bond0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                SLAVE=yes
+                TYPE=Bond
+                USERCTL=no
+                """),
+            'ifcfg-enp0s1': textwrap.dedent("""\
+                BONDING_MASTER=yes
+                BOOTPROTO=none
+                DEVICE=enp0s1
+                MASTER=bond0
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                SLAVE=yes
+                TYPE=Bond
+                USERCTL=no
+                """)
+        }
+        self._compare_files_to_expected(
+            expected, self._render_and_read(network_config=v2data))
+
+    def test_from_v2_route_metric(self):
+        """verify route-metric gets rendered on nic when source is netplan."""
+        overrides = {'route-metric': 100}
+        v2base = {
+            'version': 2,
+            'ethernets': {
+                'eno1': {'dhcp4': True,
+                         'match': {'macaddress': '07-1c-c6-75-a4-be'}}}}
+        expected = {
+            'ifcfg-eno1': textwrap.dedent("""\
+                BOOTPROTO=dhcp
+                DEVICE=eno1
+                HWADDR=07-1c-c6-75-a4-be
+                METRIC=100
+                NM_CONTROLLED=no
+                ONBOOT=yes
+                TYPE=Ethernet
+                USERCTL=no
+                """),
+            }
+        for dhcp_ver in ('dhcp4', 'dhcp6'):
+            v2data = copy.deepcopy(v2base)
+            if dhcp_ver == 'dhcp6':
+                expected['ifcfg-eno1'] += "IPV6INIT=yes\nDHCPV6C=yes\n"
+            v2data['ethernets']['eno1'].update(
+                {dhcp_ver: True, '{0}-overrides'.format(dhcp_ver): overrides})
+            self._compare_files_to_expected(
+                expected, self._render_and_read(network_config=v2data))
+
 
 class TestOpenSuseSysConfigRendering(CiTestCase):
 
@@ -2183,7 +3424,7 @@ class TestOpenSuseSysConfigRendering(CiTestCase):
     header = ('# Created by cloud-init on instance boot automatically, '
               'do not edit.\n#\n')
 
-    expected_name = 'expected_sysconfig'
+    expected_name = 'expected_sysconfig_opensuse'
 
     def _get_renderer(self):
         distro_cls = distros.fetch('opensuse')
@@ -2255,91 +3496,89 @@ class TestOpenSuseSysConfigRendering(CiTestCase):
             expected_content = """
 # Created by cloud-init on instance boot automatically, do not edit.
 #
-BOOTPROTO=dhcp
-DEVICE=eth1000
-HWADDR=07-1C-C6-75-A4-BE
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+BOOTPROTO=dhcp4
+LLADDR=07-1c-c6-75-a4-be
+STARTMODE=auto
 """.lstrip()
             self.assertEqual(expected_content, content)
 
-    def test_multiple_ipv4_default_gateways(self):
-        """ValueError is raised when duplicate ipv4 gateways exist."""
-        net_json = {
-            "services": [{"type": "dns", "address": "172.19.0.12"}],
-            "networks": [{
-                "network_id": "dacd568d-5be6-4786-91fe-750c374b78b4",
-                "type": "ipv4", "netmask": "255.255.252.0",
-                "link": "tap1a81968a-79",
-                "routes": [{
-                    "netmask": "0.0.0.0",
-                    "network": "0.0.0.0",
-                    "gateway": "172.19.3.254",
-                }, {
-                    "netmask": "0.0.0.0",  # A second default gateway
-                    "network": "0.0.0.0",
-                    "gateway": "172.20.3.254",
-                }],
-                "ip_address": "172.19.1.34", "id": "network0"
-            }],
-            "links": [
-                {
-                    "ethernet_mac_address": "fa:16:3e:ed:9a:59",
-                    "mtu": None, "type": "bridge", "id":
-                    "tap1a81968a-79",
-                    "vif_id": "1a81968a-797a-400f-8a80-567f997eb93f"
-                },
-            ],
-        }
-        macs = {'fa:16:3e:ed:9a:59': 'eth0'}
-        render_dir = self.tmp_dir()
-        network_cfg = openstack.convert_net_json(net_json, known_macs=macs)
-        ns = network_state.parse_net_config_data(network_cfg,
-                                                 skip_broken=False)
-        renderer = self._get_renderer()
-        with self.assertRaises(ValueError):
-            renderer.render_network_state(ns, target=render_dir)
-        self.assertEqual([], os.listdir(render_dir))
-
-    def test_multiple_ipv6_default_gateways(self):
-        """ValueError is raised when duplicate ipv6 gateways exist."""
-        net_json = {
-            "services": [{"type": "dns", "address": "172.19.0.12"}],
-            "networks": [{
-                "network_id": "public-ipv6",
-                "type": "ipv6", "netmask": "",
-                "link": "tap1a81968a-79",
-                "routes": [{
-                    "gateway": "2001:DB8::1",
-                    "netmask": "::",
-                    "network": "::"
-                }, {
-                    "gateway": "2001:DB9::1",
-                    "netmask": "::",
-                    "network": "::"
-                }],
-                "ip_address": "2001:DB8::10", "id": "network1"
-            }],
-            "links": [
-                {
-                    "ethernet_mac_address": "fa:16:3e:ed:9a:59",
-                    "mtu": None, "type": "bridge", "id":
-                    "tap1a81968a-79",
-                    "vif_id": "1a81968a-797a-400f-8a80-567f997eb93f"
-                },
-            ],
-        }
-        macs = {'fa:16:3e:ed:9a:59': 'eth0'}
-        render_dir = self.tmp_dir()
-        network_cfg = openstack.convert_net_json(net_json, known_macs=macs)
-        ns = network_state.parse_net_config_data(network_cfg,
-                                                 skip_broken=False)
-        renderer = self._get_renderer()
-        with self.assertRaises(ValueError):
-            renderer.render_network_state(ns, target=render_dir)
-        self.assertEqual([], os.listdir(render_dir))
+    # TODO(rjschwei): re-enable test once route writing is implemented
+    # for SUSE distros
+#    def test_multiple_ipv4_default_gateways(self):
+#        """ValueError is raised when duplicate ipv4 gateways exist."""
+#        net_json = {
+#            "services": [{"type": "dns", "address": "172.19.0.12"}],
+#            "networks": [{
+#                "network_id": "dacd568d-5be6-4786-91fe-750c374b78b4",
+#                "type": "ipv4", "netmask": "255.255.252.0",
+#                "link": "tap1a81968a-79",
+#                "routes": [{
+#                    "netmask": "0.0.0.0",
+#                    "network": "0.0.0.0",
+#                    "gateway": "172.19.3.254",
+#                }, {
+#                    "netmask": "0.0.0.0",  # A second default gateway
+#                    "network": "0.0.0.0",
+#                    "gateway": "172.20.3.254",
+#                }],
+#                "ip_address": "172.19.1.34", "id": "network0"
+#            }],
+#            "links": [
+#                {
+#                    "ethernet_mac_address": "fa:16:3e:ed:9a:59",
+#                    "mtu": None, "type": "bridge", "id":
+#                    "tap1a81968a-79",
+#                    "vif_id": "1a81968a-797a-400f-8a80-567f997eb93f"
+#                },
+#            ],
+#        }
+#        macs = {'fa:16:3e:ed:9a:59': 'eth0'}
+#        render_dir = self.tmp_dir()
+#        network_cfg = openstack.convert_net_json(net_json, known_macs=macs)
+#        ns = network_state.parse_net_config_data(network_cfg,
+#                                                 skip_broken=False)
+#        renderer = self._get_renderer()
+#        with self.assertRaises(ValueError):
+#            renderer.render_network_state(ns, target=render_dir)
+#        self.assertEqual([], os.listdir(render_dir))
+#
+#    def test_multiple_ipv6_default_gateways(self):
+#        """ValueError is raised when duplicate ipv6 gateways exist."""
+#        net_json = {
+#            "services": [{"type": "dns", "address": "172.19.0.12"}],
+#            "networks": [{
+#                "network_id": "public-ipv6",
+#                "type": "ipv6", "netmask": "",
+#                "link": "tap1a81968a-79",
+#                "routes": [{
+#                    "gateway": "2001:DB8::1",
+#                    "netmask": "::",
+#                    "network": "::"
+#                }, {
+#                    "gateway": "2001:DB9::1",
+#                    "netmask": "::",
+#                    "network": "::"
+#                }],
+#                "ip_address": "2001:DB8::10", "id": "network1"
+#            }],
+#            "links": [
+#                {
+#                    "ethernet_mac_address": "fa:16:3e:ed:9a:59",
+#                    "mtu": None, "type": "bridge", "id":
+#                    "tap1a81968a-79",
+#                    "vif_id": "1a81968a-797a-400f-8a80-567f997eb93f"
+#                },
+#            ],
+#        }
+#        macs = {'fa:16:3e:ed:9a:59': 'eth0'}
+#        render_dir = self.tmp_dir()
+#        network_cfg = openstack.convert_net_json(net_json, known_macs=macs)
+#        ns = network_state.parse_net_config_data(network_cfg,
+#                                                 skip_broken=False)
+#        renderer = self._get_renderer()
+#        with self.assertRaises(ValueError):
+#            renderer.render_network_state(ns, target=render_dir)
+#        self.assertEqual([], os.listdir(render_dir))
 
     def test_openstack_rendering_samples(self):
         for os_sample in OS_SAMPLES:
@@ -2372,24 +3611,26 @@ USERCTL=no
         expected = """\
 # Created by cloud-init on instance boot automatically, do not edit.
 #
-BOOTPROTO=none
-DEFROUTE=yes
-DEVICE=interface0
-GATEWAY=10.0.2.2
-HWADDR=52:54:00:12:34:00
+BOOTPROTO=static
 IPADDR=10.0.2.15
+LLADDR=52:54:00:12:34:00
 NETMASK=255.255.255.0
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+STARTMODE=auto
 """
         self.assertEqual(expected, found[nspath + 'ifcfg-interface0'])
+        # The configuration has no nameserver information make sure we
+        # do not write the resolv.conf file
+        respath = '/etc/resolv.conf'
+        self.assertNotIn(respath, found.keys())
 
     def test_config_with_explicit_loopback(self):
         ns = network_state.parse_net_config_data(CONFIG_V1_EXPLICIT_LOOPBACK)
         render_dir = self.tmp_path("render")
         os.makedirs(render_dir)
+        # write an etc/resolv.conf and expect it to not be modified
+        resolvconf = os.path.join(render_dir, 'etc/resolv.conf')
+        resolvconf_content = "# Original Content"
+        util.write_file(resolvconf, resolvconf_content)
         renderer = self._get_renderer()
         renderer.render_network_state(ns, target=render_dir)
         found = dir2dict(render_dir)
@@ -2399,13 +3640,11 @@ USERCTL=no
 # Created by cloud-init on instance boot automatically, do not edit.
 #
 BOOTPROTO=dhcp
-DEVICE=eth0
-NM_CONTROLLED=no
-ONBOOT=yes
-TYPE=Ethernet
-USERCTL=no
+STARTMODE=auto
 """
         self.assertEqual(expected, found[nspath + 'ifcfg-eth0'])
+        # a dhcp only config should not modify resolv.conf
+        self.assertEqual(resolvconf_content, found['/etc/resolv.conf'])
 
     def test_bond_config(self):
         expected_name = 'expected_sysconfig_opensuse'
@@ -2472,6 +3711,30 @@ USERCTL=no
         self._compare_files_to_expected(entry[self.expected_name], found)
         self._assert_headers(found)
 
+    def test_simple_render_ipv6_slaac(self):
+        entry = NETWORK_CONFIGS['ipv6_slaac']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_dhcpv6_stateless_config(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateless']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_render_v4_and_v6(self):
+        entry = NETWORK_CONFIGS['v4_and_v6']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
+    def test_render_v6_and_v4(self):
+        entry = NETWORK_CONFIGS['v6_and_v4']
+        found = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._assert_headers(found)
+
 
 class TestEniNetRendering(CiTestCase):
 
@@ -2526,6 +3789,30 @@ iface eth0 inet dhcp
         self.assertEqual(
             expected, dir2dict(tmp_dir)['/etc/network/interfaces'])
 
+    def test_v2_route_metric_to_eni(self):
+        """Network v2 route-metric overrides are preserved in eni output"""
+        tmp_dir = self.tmp_dir()
+        renderer = eni.Renderer()
+        expected_tmpl = textwrap.dedent("""\
+            auto lo
+            iface lo inet loopback
+
+            auto eth0
+            iface eth0 inet{suffix} dhcp
+                metric 100
+            """)
+        for dhcp_ver in ('dhcp4', 'dhcp6'):
+            suffix = '6' if dhcp_ver == 'dhcp6' else ''
+            dhcp_cfg = {
+                dhcp_ver: True,
+                '{ver}-overrides'.format(ver=dhcp_ver): {'route-metric': 100}}
+            v2_input = {'version': 2, 'ethernets': {'eth0': dhcp_cfg}}
+            ns = network_state.parse_net_config_data(v2_input)
+            renderer.render_network_state(ns, target=tmp_dir)
+            self.assertEqual(
+                expected_tmpl.format(suffix=suffix),
+                dir2dict(tmp_dir)['/etc/network/interfaces'])
+
 
 class TestNetplanNetRendering(CiTestCase):
 
@@ -2562,13 +3849,13 @@ class TestNetplanNetRendering(CiTestCase):
 
         expected = """
 network:
-    version: 2
     ethernets:
         eth1000:
             dhcp4: true
             match:
                 macaddress: 07-1c-c6-75-a4-be
             set-name: eth1000
+    version: 2
 """
         self.assertEqual(expected.lstrip(), contents.lstrip())
         self.assertEqual(1, mock_clean_default.call_count)
@@ -2645,7 +3932,9 @@ class TestNetplanPostcommands(CiTestCase):
 
     @mock.patch.object(netplan.Renderer, '_netplan_generate')
     @mock.patch.object(netplan.Renderer, '_net_setup_link')
-    def test_netplan_render_calls_postcmds(self, mock_netplan_generate,
+    @mock.patch('cloudinit.util.subp')
+    def test_netplan_render_calls_postcmds(self, mock_subp,
+                                           mock_netplan_generate,
                                            mock_net_setup_link):
         tmp_dir = self.tmp_dir()
         ns = network_state.parse_net_config_data(self.mycfg,
@@ -2657,14 +3946,18 @@ class TestNetplanPostcommands(CiTestCase):
         render_target = 'netplan.yaml'
         renderer = netplan.Renderer(
             {'netplan_path': render_target, 'postcmds': True})
+        mock_subp.side_effect = iter([util.ProcessExecutionError])
         renderer.render_network_state(ns, target=render_dir)
 
         mock_netplan_generate.assert_called_with(run=True)
         mock_net_setup_link.assert_called_with(run=True)
 
+    @mock.patch('cloudinit.util.SeLinuxGuard')
     @mock.patch.object(netplan, "get_devicelist")
     @mock.patch('cloudinit.util.subp')
-    def test_netplan_postcmds(self, mock_subp, mock_devlist):
+    def test_netplan_postcmds(self, mock_subp, mock_devlist, mock_sel):
+        mock_sel.__enter__ = mock.Mock(return_value=False)
+        mock_sel.__exit__ = mock.Mock()
         mock_devlist.side_effect = [['lo']]
         tmp_dir = self.tmp_dir()
         ns = network_state.parse_net_config_data(self.mycfg,
@@ -2676,7 +3969,13 @@ class TestNetplanPostcommands(CiTestCase):
         render_target = 'netplan.yaml'
         renderer = netplan.Renderer(
             {'netplan_path': render_target, 'postcmds': True})
+        mock_subp.side_effect = iter([
+            util.ProcessExecutionError,
+            ('', ''),
+            ('', ''),
+        ])
         expected = [
+            mock.call(['netplan', 'info'], capture=True),
             mock.call(['netplan', 'generate'], capture=True),
             mock.call(['udevadm', 'test-builtin', 'net_setup_link',
                        '/sys/class/net/lo'], capture=True),
@@ -2775,13 +4074,13 @@ class TestCmdlineConfigParsing(CiTestCase):
         self.assertEqual(found, self.simple_cfg)
 
 
-class TestCmdlineReadKernelConfig(FilesystemMockingTestCase):
+class TestCmdlineKlibcNetworkConfigSource(FilesystemMockingTestCase):
     macs = {
         'eth0': '14:02:ec:42:48:00',
         'eno1': '14:02:ec:42:48:01',
     }
 
-    def test_ip_cmdline_without_ip(self):
+    def test_without_ip(self):
         content = {'/run/net-eth0.conf': DHCP_CONTENT_1,
                    cmdline._OPEN_ISCSI_INTERFACE_FILE: "eth0\n"}
         exp1 = copy.deepcopy(DHCP_EXPECTED_1)
@@ -2791,12 +4090,15 @@ class TestCmdlineReadKernelConfig(FilesystemMockingTestCase):
         populate_dir(root, content)
         self.reRoot(root)
 
-        found = cmdline.read_kernel_cmdline_config(
-            cmdline='foo root=/root/bar', mac_addrs=self.macs)
+        src = cmdline.KlibcNetworkConfigSource(
+            _cmdline='foo root=/root/bar', _mac_addrs=self.macs,
+        )
+        self.assertTrue(src.is_applicable())
+        found = src.render_config()
         self.assertEqual(found['version'], 1)
         self.assertEqual(found['config'], [exp1])
 
-    def test_ip_cmdline_read_kernel_cmdline_ip(self):
+    def test_with_ip(self):
         content = {'/run/net-eth0.conf': DHCP_CONTENT_1}
         exp1 = copy.deepcopy(DHCP_EXPECTED_1)
         exp1['mac_address'] = self.macs['eth0']
@@ -2805,20 +4107,25 @@ class TestCmdlineReadKernelConfig(FilesystemMockingTestCase):
         populate_dir(root, content)
         self.reRoot(root)
 
-        found = cmdline.read_kernel_cmdline_config(
-            cmdline='foo ip=dhcp', mac_addrs=self.macs)
+        src = cmdline.KlibcNetworkConfigSource(
+            _cmdline='foo ip=dhcp', _mac_addrs=self.macs,
+        )
+        self.assertTrue(src.is_applicable())
+        found = src.render_config()
         self.assertEqual(found['version'], 1)
         self.assertEqual(found['config'], [exp1])
 
-    def test_ip_cmdline_read_kernel_cmdline_ip6(self):
+    def test_with_ip6(self):
         content = {'/run/net6-eno1.conf': DHCP6_CONTENT_1}
         root = self.tmp_dir()
         populate_dir(root, content)
         self.reRoot(root)
 
-        found = cmdline.read_kernel_cmdline_config(
-            cmdline='foo ip6=dhcp root=/dev/sda',
-            mac_addrs=self.macs)
+        src = cmdline.KlibcNetworkConfigSource(
+            _cmdline='foo ip6=dhcp root=/dev/sda', _mac_addrs=self.macs,
+        )
+        self.assertTrue(src.is_applicable())
+        found = src.render_config()
         self.assertEqual(
             found,
             {'version': 1, 'config': [
@@ -2828,15 +4135,16 @@ class TestCmdlineReadKernelConfig(FilesystemMockingTestCase):
                   {'dns_nameservers': ['2001:67c:1562:8010::2:1'],
                    'control': 'manual', 'type': 'dhcp6', 'netmask': '64'}]}]})
 
-    def test_ip_cmdline_read_kernel_cmdline_none(self):
+    def test_with_no_ip_or_ip6(self):
         # if there is no ip= or ip6= on cmdline, return value should be None
         content = {'net6-eno1.conf': DHCP6_CONTENT_1}
         files = sorted(populate_dir(self.tmp_dir(), content))
-        found = cmdline.read_kernel_cmdline_config(
-            files=files, cmdline='foo root=/dev/sda', mac_addrs=self.macs)
-        self.assertIsNone(found)
+        src = cmdline.KlibcNetworkConfigSource(
+            _files=files, _cmdline='foo root=/dev/sda', _mac_addrs=self.macs,
+        )
+        self.assertFalse(src.is_applicable())
 
-    def test_ip_cmdline_both_ip_ip6(self):
+    def test_with_both_ip_ip6(self):
         content = {
             '/run/net-eth0.conf': DHCP_CONTENT_1,
             '/run/net6-eth0.conf': DHCP6_CONTENT_1.replace('eno1', 'eth0')}
@@ -2851,14 +4159,92 @@ class TestCmdlineReadKernelConfig(FilesystemMockingTestCase):
         populate_dir(root, content)
         self.reRoot(root)
 
-        found = cmdline.read_kernel_cmdline_config(
-            cmdline='foo ip=dhcp ip6=dhcp', mac_addrs=self.macs)
+        src = cmdline.KlibcNetworkConfigSource(
+            _cmdline='foo ip=dhcp ip6=dhcp', _mac_addrs=self.macs,
+        )
 
+        self.assertTrue(src.is_applicable())
+        found = src.render_config()
         self.assertEqual(found['version'], 1)
         self.assertEqual(found['config'], expected)
 
 
+class TestReadInitramfsConfig(CiTestCase):
+
+    def _config_source_cls_mock(self, is_applicable, render_config=None):
+        return lambda: mock.Mock(
+            is_applicable=lambda: is_applicable,
+            render_config=lambda: render_config,
+        )
+
+    def test_no_sources(self):
+        with mock.patch('cloudinit.net.cmdline._INITRAMFS_CONFIG_SOURCES', []):
+            self.assertIsNone(cmdline.read_initramfs_config())
+
+    def test_no_applicable_sources(self):
+        sources = [
+            self._config_source_cls_mock(is_applicable=False),
+            self._config_source_cls_mock(is_applicable=False),
+            self._config_source_cls_mock(is_applicable=False),
+        ]
+        with mock.patch('cloudinit.net.cmdline._INITRAMFS_CONFIG_SOURCES',
+                        sources):
+            self.assertIsNone(cmdline.read_initramfs_config())
+
+    def test_one_applicable_source(self):
+        expected_config = object()
+        sources = [
+            self._config_source_cls_mock(
+                is_applicable=True, render_config=expected_config,
+            ),
+        ]
+        with mock.patch('cloudinit.net.cmdline._INITRAMFS_CONFIG_SOURCES',
+                        sources):
+            self.assertEqual(expected_config, cmdline.read_initramfs_config())
+
+    def test_one_applicable_source_after_inapplicable_sources(self):
+        expected_config = object()
+        sources = [
+            self._config_source_cls_mock(is_applicable=False),
+            self._config_source_cls_mock(is_applicable=False),
+            self._config_source_cls_mock(
+                is_applicable=True, render_config=expected_config,
+            ),
+        ]
+        with mock.patch('cloudinit.net.cmdline._INITRAMFS_CONFIG_SOURCES',
+                        sources):
+            self.assertEqual(expected_config, cmdline.read_initramfs_config())
+
+    def test_first_applicable_source_is_used(self):
+        first_config, second_config = object(), object()
+        sources = [
+            self._config_source_cls_mock(
+                is_applicable=True, render_config=first_config,
+            ),
+            self._config_source_cls_mock(
+                is_applicable=True, render_config=second_config,
+            ),
+        ]
+        with mock.patch('cloudinit.net.cmdline._INITRAMFS_CONFIG_SOURCES',
+                        sources):
+            self.assertEqual(first_config, cmdline.read_initramfs_config())
+
+
 class TestNetplanRoundTrip(CiTestCase):
+
+    NETPLAN_INFO_OUT = textwrap.dedent("""
+    netplan.io:
+      features:
+        - dhcp-use-domains
+        - ipv6-mtu
+      website: https://netplan.io/
+    """)
+
+    def setUp(self):
+        super(TestNetplanRoundTrip, self).setUp()
+        self.add_patch('cloudinit.net.netplan.util.subp', 'm_subp')
+        self.m_subp.return_value = (self.NETPLAN_INFO_OUT, '')
+
     def _render_and_read(self, network_config=None, state=None,
                          netplan_path=None, target=None):
         if target is None:
@@ -2929,6 +4315,46 @@ class TestNetplanRoundTrip(CiTestCase):
             entry['expected_netplan'].splitlines(),
             files['/etc/netplan/50-cloud-init.yaml'].splitlines())
 
+    def testsimple_render_dhcpv6_accept_ra(self):
+        entry = NETWORK_CONFIGS['dhcpv6_accept_ra']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def testsimple_render_dhcpv6_reject_ra(self):
+        entry = NETWORK_CONFIGS['dhcpv6_reject_ra']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def testsimple_render_ipv6_slaac(self):
+        entry = NETWORK_CONFIGS['ipv6_slaac']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def testsimple_render_dhcpv6_stateless(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateless']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def testsimple_render_dhcpv6_stateful(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateful']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
     def testsimple_render_all(self):
         entry = NETWORK_CONFIGS['all']
         files = self._render_and_read(network_config=yaml.load(entry['yaml']))
@@ -2942,6 +4368,53 @@ class TestNetplanRoundTrip(CiTestCase):
     def testsimple_render_manual(self):
         entry = NETWORK_CONFIGS['manual']
         files = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def test_render_output_has_yaml_no_aliases(self):
+        entry = {
+            'yaml': V1_NAMESERVER_ALIAS,
+            'expected_netplan': NETPLAN_NO_ALIAS,
+        }
+        network_config = yaml.load(entry['yaml'])
+        ns = network_state.parse_net_config_data(network_config)
+        files = self._render_and_read(state=ns)
+        # check for alias
+        content = files['/etc/netplan/50-cloud-init.yaml']
+
+        # test load the yaml to ensure we don't render something not loadable
+        # this allows single aliases, but not duplicate ones
+        parsed = yaml.load(files['/etc/netplan/50-cloud-init.yaml'])
+        self.assertNotEqual(None, parsed)
+
+        # now look for any alias, avoid rendering them entirely
+        # generate the first anchor string using the template
+        # as of this writing, looks like "&id001"
+        anchor = r'&' + Serializer.ANCHOR_TEMPLATE % 1
+        found_alias = re.search(anchor, content, re.MULTILINE)
+        if found_alias:
+            msg = "Error at: %s\nContent:\n%s" % (found_alias, content)
+            raise ValueError('Found yaml alias in rendered netplan: ' + msg)
+
+        print(entry['expected_netplan'])
+        print('-- expected ^ | v rendered --')
+        print(files['/etc/netplan/50-cloud-init.yaml'])
+        self.assertEqual(
+            entry['expected_netplan'].splitlines(),
+            files['/etc/netplan/50-cloud-init.yaml'].splitlines())
+
+    def test_render_output_supports_both_grat_arp_spelling(self):
+        entry = {
+            'yaml': NETPLAN_BOND_GRAT_ARP,
+            'expected_netplan': NETPLAN_BOND_GRAT_ARP.replace('gratuitous',
+                                                              'gratuitious'),
+        }
+        network_config = yaml.load(entry['yaml']).get('network')
+        files = self._render_and_read(network_config=network_config)
+        print(entry['expected_netplan'])
+        print('-- expected ^ | v rendered --')
+        print(files['/etc/netplan/50-cloud-init.yaml'])
         self.assertEqual(
             entry['expected_netplan'].splitlines(),
             files['/etc/netplan/50-cloud-init.yaml'].splitlines())
@@ -3012,6 +4485,43 @@ class TestEniRoundTrip(CiTestCase):
             entry['expected_eni'].splitlines(),
             files['/etc/network/interfaces'].splitlines())
 
+    def testsimple_render_dhcpv6_stateless(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateless']
+        files = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
+
+    def testsimple_render_ipv6_slaac(self):
+        entry = NETWORK_CONFIGS['ipv6_slaac']
+        files = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
+
+    def testsimple_render_dhcpv6_stateful(self):
+        entry = NETWORK_CONFIGS['dhcpv6_stateless']
+        files = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
+
+    def testsimple_render_dhcpv6_accept_ra(self):
+        entry = NETWORK_CONFIGS['dhcpv6_accept_ra']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
+
+    def testsimple_render_dhcpv6_reject_ra(self):
+        entry = NETWORK_CONFIGS['dhcpv6_reject_ra']
+        files = self._render_and_read(network_config=yaml.load(
+            entry['yaml_v1']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
+
     def testsimple_render_manual(self):
         """Test rendering of 'manual' for 'type' and 'control'.
 
@@ -3054,23 +4564,94 @@ class TestEniRoundTrip(CiTestCase):
             'iface eth0 inet static',
             '    address 172.23.31.42/26',
             '    gateway 172.23.31.2',
-            ('post-up route add -net 10.0.0.0 netmask 255.240.0.0 gw '
+            ('post-up route add -net 10.0.0.0/12 gw '
              '172.23.31.1 metric 0 || true'),
-            ('pre-down route del -net 10.0.0.0 netmask 255.240.0.0 gw '
+            ('pre-down route del -net 10.0.0.0/12 gw '
              '172.23.31.1 metric 0 || true'),
-            ('post-up route add -net 192.168.2.0 netmask 255.255.0.0 gw '
+            ('post-up route add -net 192.168.2.0/16 gw '
              '172.23.31.1 metric 0 || true'),
-            ('pre-down route del -net 192.168.2.0 netmask 255.255.0.0 gw '
+            ('pre-down route del -net 192.168.2.0/16 gw '
              '172.23.31.1 metric 0 || true'),
-            ('post-up route add -net 10.0.200.0 netmask 255.255.0.0 gw '
+            ('post-up route add -net 10.0.200.0/16 gw '
              '172.23.31.1 metric 1 || true'),
-            ('pre-down route del -net 10.0.200.0 netmask 255.255.0.0 gw '
+            ('pre-down route del -net 10.0.200.0/16 gw '
              '172.23.31.1 metric 1 || true'),
         ]
         found = files['/etc/network/interfaces'].splitlines()
 
         self.assertEqual(
             expected, [line for line in found if line])
+
+    def test_ipv6_static_routes(self):
+        # as reported in bug 1818669
+        conf = [
+            {'name': 'eno3', 'type': 'physical',
+             'subnets': [{
+                 'address': 'fd00::12/64',
+                 'dns_nameservers': ['fd00:2::15'],
+                 'gateway': 'fd00::1',
+                 'ipv6': True,
+                 'type': 'static',
+                 'routes': [{'netmask': '32',
+                             'network': 'fd00:12::',
+                             'gateway': 'fd00::2'},
+                            {'network': 'fd00:14::',
+                             'gateway': 'fd00::3'},
+                            {'destination': 'fe00:14::/48',
+                             'gateway': 'fe00::4',
+                             'metric': 500},
+                            {'gateway': '192.168.23.1',
+                             'metric': 999,
+                             'netmask': 24,
+                             'network': '192.168.23.0'},
+                            {'destination': '10.23.23.0/24',
+                             'gateway': '10.23.23.2',
+                             'metric': 300}]}]},
+        ]
+
+        files = self._render_and_read(
+            network_config={'config': conf, 'version': 1})
+        expected = [
+            'auto lo',
+            'iface lo inet loopback',
+            'auto eno3',
+            'iface eno3 inet6 static',
+            '    address fd00::12/64',
+            '    dns-nameservers fd00:2::15',
+            '    gateway fd00::1',
+            ('    post-up route add -A inet6 fd00:12::/32 gw '
+             'fd00::2 || true'),
+            ('    pre-down route del -A inet6 fd00:12::/32 gw '
+             'fd00::2 || true'),
+            ('    post-up route add -A inet6 fd00:14::/64 gw '
+             'fd00::3 || true'),
+            ('    pre-down route del -A inet6 fd00:14::/64 gw '
+             'fd00::3 || true'),
+            ('    post-up route add -A inet6 fe00:14::/48 gw '
+             'fe00::4 metric 500 || true'),
+            ('    pre-down route del -A inet6 fe00:14::/48 gw '
+             'fe00::4 metric 500 || true'),
+            ('    post-up route add -net 192.168.23.0/24 gw '
+             '192.168.23.1 metric 999 || true'),
+            ('    pre-down route del -net 192.168.23.0/24 gw '
+             '192.168.23.1 metric 999 || true'),
+            ('    post-up route add -net 10.23.23.0/24 gw '
+             '10.23.23.2 metric 300 || true'),
+            ('    pre-down route del -net 10.23.23.0/24 gw '
+             '10.23.23.2 metric 300 || true'),
+
+        ]
+        found = files['/etc/network/interfaces'].splitlines()
+
+        self.assertEqual(
+            expected, [line for line in found if line])
+
+    def testsimple_render_bond(self):
+        entry = NETWORK_CONFIGS['bond']
+        files = self._render_and_read(network_config=yaml.load(entry['yaml']))
+        self.assertEqual(
+            entry['expected_eni'].splitlines(),
+            files['/etc/network/interfaces'].splitlines())
 
 
 class TestNetRenderers(CiTestCase):
@@ -3115,6 +4696,66 @@ class TestNetRenderers(CiTestCase):
 
         self.assertRaises(net.RendererNotFoundError, renderers.select,
                           priority=['sysconfig', 'eni'])
+
+    @mock.patch("cloudinit.net.renderers.netplan.available")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available_sysconfig")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available_nm")
+    @mock.patch("cloudinit.net.renderers.eni.available")
+    @mock.patch("cloudinit.net.renderers.sysconfig.util.get_linux_distro")
+    def test_sysconfig_selected_on_sysconfig_enabled_distros(self, m_distro,
+                                                             m_eni, m_sys_nm,
+                                                             m_sys_scfg,
+                                                             m_sys_avail,
+                                                             m_netplan):
+        """sysconfig only selected on specific distros (rhel/sles)."""
+
+        # Ubuntu with Network-Manager installed
+        m_eni.return_value = False        # no ifupdown (ifquery)
+        m_sys_scfg.return_value = False   # no sysconfig/ifup/ifdown
+        m_sys_nm.return_value = True      # network-manager is installed
+        m_netplan.return_value = True     # netplan is installed
+        m_sys_avail.return_value = False  # no sysconfig on Ubuntu
+        m_distro.return_value = ('ubuntu', None, None)
+        self.assertEqual('netplan', renderers.select(priority=None)[0])
+
+        # Centos with Network-Manager installed
+        m_eni.return_value = False       # no ifupdown (ifquery)
+        m_sys_scfg.return_value = False  # no sysconfig/ifup/ifdown
+        m_sys_nm.return_value = True     # network-manager is installed
+        m_netplan.return_value = False   # netplan is not installed
+        m_sys_avail.return_value = True  # sysconfig is available on centos
+        m_distro.return_value = ('centos', None, None)
+        self.assertEqual('sysconfig', renderers.select(priority=None)[0])
+
+        # OpenSuse with Network-Manager installed
+        m_eni.return_value = False       # no ifupdown (ifquery)
+        m_sys_scfg.return_value = False  # no sysconfig/ifup/ifdown
+        m_sys_nm.return_value = True     # network-manager is installed
+        m_netplan.return_value = False   # netplan is not installed
+        m_sys_avail.return_value = True  # sysconfig is available on opensuse
+        m_distro.return_value = ('opensuse', None, None)
+        self.assertEqual('sysconfig', renderers.select(priority=None)[0])
+
+    @mock.patch("cloudinit.net.sysconfig.available_sysconfig")
+    @mock.patch("cloudinit.util.get_linux_distro")
+    def test_sysconfig_available_uses_variant_mapping(self, m_distro, m_avail):
+        m_avail.return_value = True
+        distro_values = [
+           ('opensuse', '', ''),
+           ('opensuse-leap', '', ''),
+           ('opensuse-tumbleweed', '', ''),
+           ('sles', '', ''),
+           ('centos', '', ''),
+           ('fedora', '', ''),
+           ('redhat', '', ''),
+        ]
+        for (distro_name, distro_version, flavor) in distro_values:
+            m_distro.return_value = (distro_name, distro_version, flavor)
+            if hasattr(util.system_info, "cache_clear"):
+                util.system_info.cache_clear()
+            result = sysconfig.available()
+            self.assertTrue(result)
 
 
 class TestGetInterfaces(CiTestCase):

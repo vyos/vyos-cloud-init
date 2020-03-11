@@ -5,13 +5,8 @@
 import gzip
 import logging
 import os
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
-
-from six import BytesIO, StringIO
+from io import BytesIO, StringIO
+from unittest import mock
 
 from email import encoders
 from email.mime.application import MIMEApplication
@@ -27,6 +22,7 @@ from cloudinit.settings import (PER_INSTANCE)
 from cloudinit import sources
 from cloudinit import stages
 from cloudinit import user_data as ud
+from cloudinit import safeyaml
 from cloudinit import util
 
 from cloudinit.tests import helpers
@@ -502,7 +498,7 @@ c: 4
         data = [{'content': '#cloud-config\npassword: gocubs\n'},
                 {'content': '#cloud-config\nlocale: chicago\n'},
                 {'content': non_decodable}]
-        message = b'#cloud-config-archive\n' + util.yaml_dumps(data).encode()
+        message = b'#cloud-config-archive\n' + safeyaml.dumps(data).encode()
 
         self.reRoot()
         ci = stages.Init()
@@ -523,6 +519,46 @@ c: 4
         cfg = util.load_yaml(fs[ci.paths.get_ipath("cloud_config")])
         self.assertEqual(cfg.get('password'), 'gocubs')
         self.assertEqual(cfg.get('locale'), 'chicago')
+
+    @mock.patch('cloudinit.util.read_conf_with_confd')
+    def test_dont_allow_user_data(self, mock_cfg):
+        mock_cfg.return_value = {"allow_userdata": False}
+
+        # test that user-data is ignored but vendor-data is kept
+        user_blob = '''
+#cloud-config-jsonp
+[
+     { "op": "add", "path": "/baz", "value": "qux" },
+     { "op": "add", "path": "/bar", "value": "qux2" }
+]
+'''
+        vendor_blob = '''
+#cloud-config-jsonp
+[
+     { "op": "add", "path": "/baz", "value": "quxA" },
+     { "op": "add", "path": "/bar", "value": "quxB" },
+     { "op": "add", "path": "/foo", "value": "quxC" }
+]
+'''
+        self.reRoot()
+        initer = stages.Init()
+        initer.datasource = FakeDataSource(user_blob, vendordata=vendor_blob)
+        initer.read_cfg()
+        initer.initialize()
+        initer.fetch()
+        initer.instancify()
+        initer.update()
+        initer.cloudify().run('consume_data',
+                              initer.consume_data,
+                              args=[PER_INSTANCE],
+                              freq=PER_INSTANCE)
+        mods = stages.Modules(initer)
+        (_which_ran, _failures) = mods.run_section('cloud_init_modules')
+        cfg = mods.cfg
+        self.assertIn('vendor_data', cfg)
+        self.assertEqual('quxA', cfg['baz'])
+        self.assertEqual('quxB', cfg['bar'])
+        self.assertEqual('quxC', cfg['foo'])
 
 
 class TestConsumeUserDataHttp(TestConsumeUserData, helpers.HttprettyTestCase):

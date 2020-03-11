@@ -61,8 +61,7 @@ used::
 
 import base64
 import os
-
-from six import BytesIO
+from io import BytesIO
 
 from cloudinit import log as logging
 from cloudinit.settings import PER_INSTANCE
@@ -131,7 +130,7 @@ def handle(name, cfg, cloud, log, _args):
         env['RANDOM_SEED_FILE'] = seed_path
         handle_random_seed_command(command=command, required=req, env=env)
     except ValueError as e:
-        log.warn("handling random command [%s] failed: %s", command, e)
+        log.warning("handling random command [%s] failed: %s", command, e)
         raise e
 
 # vi: ts=4 expandtab

@@ -4,6 +4,7 @@ from cloudinit import settings
 from cloudinit import sources
 from cloudinit import type_utils
 from cloudinit.sources import (
+    DataSource,
     DataSourceAliYun as AliYun,
     DataSourceAltCloud as AltCloud,
     DataSourceAzure as Azure,
@@ -13,6 +14,7 @@ from cloudinit.sources import (
     DataSourceConfigDrive as ConfigDrive,
     DataSourceDigitalOcean as DigitalOcean,
     DataSourceEc2 as Ec2,
+    DataSourceExoscale as Exoscale,
     DataSourceGCE as GCE,
     DataSourceHetzner as Hetzner,
     DataSourceIBMCloud as IBMCloud,
@@ -22,6 +24,7 @@ from cloudinit.sources import (
     DataSourceOpenStack as OpenStack,
     DataSourceOracle as Oracle,
     DataSourceOVF as OVF,
+    DataSourceRbxCloud as RbxCloud,
     DataSourceScaleway as Scaleway,
     DataSourceSmartOS as SmartOS,
 )
@@ -43,6 +46,7 @@ DEFAULT_LOCAL = [
     SmartOS.DataSourceSmartOS,
     Ec2.DataSourceEc2Local,
     OpenStack.DataSourceOpenStackLocal,
+    RbxCloud.DataSourceRbxCloud,
     Scaleway.DataSourceScaleway,
 ]
 
@@ -53,6 +57,7 @@ DEFAULT_NETWORK = [
     CloudStack.DataSourceCloudStack,
     DSNone.DataSourceNone,
     Ec2.DataSourceEc2,
+    Exoscale.DataSourceExoscale,
     GCE.DataSourceGCE,
     MAAS.DataSourceMAAS,
     NoCloud.DataSourceNoCloudNet,
@@ -82,5 +87,24 @@ class ExpectedDataSources(test_helpers.TestCase):
             ['AliYun'], self.deps_network, self.pkg_list)
         self.assertEqual(set([AliYun.DataSourceAliYun]), set(found))
 
+
+class TestDataSourceInvariants(test_helpers.TestCase):
+    def test_data_sources_have_valid_network_config_sources(self):
+        for ds in DEFAULT_LOCAL + DEFAULT_NETWORK:
+            for cfg_src in ds.network_config_sources:
+                fail_msg = ('{} has an invalid network_config_sources entry:'
+                            ' {}'.format(str(ds), cfg_src))
+                self.assertTrue(hasattr(sources.NetworkConfigSource, cfg_src),
+                                fail_msg)
+
+    def test_expected_dsname_defined(self):
+        for ds in DEFAULT_LOCAL + DEFAULT_NETWORK:
+            fail_msg = (
+                '{} has an invalid / missing dsname property: {}'.format(
+                    str(ds), str(ds.dsname)
+                )
+            )
+            self.assertNotEqual(ds.dsname, DataSource.dsname, fail_msg)
+            self.assertIsNotNone(ds.dsname)
 
 # vi: ts=4 expandtab

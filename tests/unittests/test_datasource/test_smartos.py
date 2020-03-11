@@ -1,5 +1,5 @@
 # Copyright (C) 2013 Canonical Ltd.
-# Copyright (c) 2018, Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 #
 # Author: Ben Howard <ben.howard@canonical.com>
 #
@@ -31,8 +31,7 @@ from cloudinit.sources.DataSourceSmartOS import (
     convert_smartos_network_data as convert_net,
     SMARTOS_ENV_KVM, SERIAL_DEVICE, get_smartos_environ,
     identify_file)
-
-import six
+from cloudinit.event import EventType
 
 from cloudinit import helpers as c_helpers
 from cloudinit.util import (
@@ -653,6 +652,12 @@ class TestSmartOSDataSource(FilesystemMockingTestCase):
         self.assertEqual(dsrc.device_name_to_device('FOO'),
                          mydscfg['disk_aliases']['FOO'])
 
+    def test_reconfig_network_on_boot(self):
+        # Test to ensure that network is configured from metadata on each boot
+        dsrc = self._get_ds(mockdata=MOCK_RETURNS)
+        self.assertSetEqual(set([EventType.BOOT_NEW_INSTANCE, EventType.BOOT]),
+                            dsrc.update_events['network'])
+
 
 class TestIdentifyFile(CiTestCase):
     """Test the 'identify_file' utility."""
@@ -791,7 +796,7 @@ class TestJoyentMetadataClient(FilesystemMockingTestCase):
         return self.serial.write.call_args[0][0]
 
     def test_get_metadata_writes_bytes(self):
-        self.assertIsInstance(self._get_written_line(), six.binary_type)
+        self.assertIsInstance(self._get_written_line(), bytes)
 
     def test_get_metadata_line_starts_with_v2(self):
         foo = self._get_written_line()

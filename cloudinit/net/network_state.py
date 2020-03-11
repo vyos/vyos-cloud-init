@@ -10,19 +10,23 @@ import logging
 import socket
 import struct
 
-import six
-
+from cloudinit import safeyaml
 from cloudinit import util
 
 LOG = logging.getLogger(__name__)
 
 NETWORK_STATE_VERSION = 1
+IPV6_DYNAMIC_TYPES = ['dhcp6',
+                      'ipv6_slaac',
+                      'ipv6_dhcpv6-stateless',
+                      'ipv6_dhcpv6-stateful']
 NETWORK_STATE_REQUIRED_KEYS = {
     1: ['version', 'config', 'network_state'],
 }
 NETWORK_V2_KEY_FILTER = [
-    'addresses', 'dhcp4', 'dhcp6', 'gateway4', 'gateway6', 'interfaces',
-    'match', 'mtu', 'nameservers', 'renderer', 'set-name', 'wakeonlan'
+    'addresses', 'dhcp4', 'dhcp4-overrides', 'dhcp6', 'dhcp6-overrides',
+    'gateway4', 'gateway6', 'interfaces', 'match', 'mtu', 'nameservers',
+    'renderer', 'set-name', 'wakeonlan', 'accept-ra'
 ]
 
 NET_CONFIG_TO_V2 = {
@@ -67,7 +71,7 @@ def parse_net_config_data(net_config, skip_broken=True):
         # pass the whole net-config as-is
         config = net_config
 
-    if version and config:
+    if version and config is not None:
         nsi = NetworkStateInterpreter(version=version, config=config)
         nsi.parse_config(skip_broken=skip_broken)
         state = nsi.get_network_state()
@@ -148,6 +152,7 @@ class NetworkState(object):
         self._network_state = copy.deepcopy(network_state)
         self._version = version
         self.use_ipv6 = network_state.get('use_ipv6', False)
+        self._has_default_route = None
 
     @property
     def config(self):
@@ -156,14 +161,6 @@ class NetworkState(object):
     @property
     def version(self):
         return self._version
-
-    def iter_routes(self, filter_func=None):
-        for route in self._network_state.get('routes', []):
-            if filter_func is not None:
-                if filter_func(route):
-                    yield route
-            else:
-                yield route
 
     @property
     def dns_nameservers(self):
@@ -179,18 +176,49 @@ class NetworkState(object):
         except KeyError:
             return []
 
+    @property
+    def has_default_route(self):
+        if self._has_default_route is None:
+            self._has_default_route = self._maybe_has_default_route()
+        return self._has_default_route
+
     def iter_interfaces(self, filter_func=None):
         ifaces = self._network_state.get('interfaces', {})
-        for iface in six.itervalues(ifaces):
+        for iface in ifaces.values():
             if filter_func is None:
                 yield iface
             else:
                 if filter_func(iface):
                     yield iface
 
+    def iter_routes(self, filter_func=None):
+        for route in self._network_state.get('routes', []):
+            if filter_func is not None:
+                if filter_func(route):
+                    yield route
+            else:
+                yield route
 
-@six.add_metaclass(CommandHandlerMeta)
-class NetworkStateInterpreter(object):
+    def _maybe_has_default_route(self):
+        for route in self.iter_routes():
+            if self._is_default_route(route):
+                return True
+        for iface in self.iter_interfaces():
+            for subnet in iface.get('subnets', []):
+                for route in subnet.get('routes', []):
+                    if self._is_default_route(route):
+                        return True
+        return False
+
+    def _is_default_route(self, route):
+        default_nets = ('::', '0.0.0.0')
+        return (
+            route.get('prefix') == 0
+            and route.get('network') in default_nets
+            )
+
+
+class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
 
     initial_network_state = {
         'interfaces': {},
@@ -228,7 +256,7 @@ class NetworkStateInterpreter(object):
             'config': self._config,
             'network_state': self._network_state,
         }
-        return util.yaml_dumps(state)
+        return safeyaml.dumps(state)
 
     def load(self, state):
         if 'version' not in state:
@@ -247,7 +275,7 @@ class NetworkStateInterpreter(object):
             setattr(self, key, state[key])
 
     def dump_network_state(self):
-        return util.yaml_dumps(self._network_state)
+        return safeyaml.dumps(self._network_state)
 
     def as_dict(self):
         return {'version': self._version, 'config': self._config}
@@ -315,7 +343,8 @@ class NetworkStateInterpreter(object):
             'name': 'eth0',
             'subnets': [
                 {'type': 'dhcp4'}
-             ]
+             ],
+            'accept-ra': 'true'
         }
         '''
 
@@ -335,6 +364,9 @@ class NetworkStateInterpreter(object):
                     self.use_ipv6 = True
                     break
 
+        accept_ra = command.get('accept-ra', None)
+        if accept_ra is not None:
+            accept_ra = util.is_true(accept_ra)
         iface.update({
             'name': command.get('name'),
             'type': command.get('type'),
@@ -345,6 +377,7 @@ class NetworkStateInterpreter(object):
             'address': None,
             'gateway': None,
             'subnets': subnets,
+            'accept-ra': accept_ra
         })
         self._network_state['interfaces'].update({command.get('name'): iface})
         self.dump_network_state()
@@ -571,6 +604,7 @@ class NetworkStateInterpreter(object):
           eno1:
             match:
               macaddress: 00:11:22:33:44:55
+              driver: hv_netsvc
             wakeonlan: true
             dhcp4: true
             dhcp6: false
@@ -587,6 +621,7 @@ class NetworkStateInterpreter(object):
               driver: ixgbe
             set-name: lom1
             dhcp6: true
+            accept-ra: true
           switchports:
             match:
               name: enp2*
@@ -606,15 +641,18 @@ class NetworkStateInterpreter(object):
                 'type': 'physical',
                 'name': cfg.get('set-name', eth),
             }
-            mac_address = cfg.get('match', {}).get('macaddress', None)
+            match = cfg.get('match', {})
+            mac_address = match.get('macaddress', None)
             if not mac_address:
                 LOG.debug('NetworkState Version2: missing "macaddress" info '
                           'in config entry: %s: %s', eth, str(cfg))
-            phy_cmd.update({'mac_address': mac_address})
-
-            for key in ['mtu', 'match', 'wakeonlan']:
+            phy_cmd['mac_address'] = mac_address
+            driver = match.get('driver', None)
+            if driver:
+                phy_cmd['params'] = {'driver': driver}
+            for key in ['mtu', 'match', 'wakeonlan', 'accept-ra']:
                 if key in cfg:
-                    phy_cmd.update({key: cfg.get(key)})
+                    phy_cmd[key] = cfg[key]
 
             subnets = self._v2_to_v1_ipcfg(cfg)
             if len(subnets) > 0:
@@ -648,6 +686,8 @@ class NetworkStateInterpreter(object):
                 'vlan_id': cfg.get('id'),
                 'vlan_link': cfg.get('link'),
             }
+            if 'mtu' in cfg:
+                vlan_cmd['mtu'] = cfg['mtu']
             subnets = self._v2_to_v1_ipcfg(cfg)
             if len(subnets) > 0:
                 vlan_cmd.update({'subnets': subnets})
@@ -682,6 +722,14 @@ class NetworkStateInterpreter(object):
             item_params = dict((key, value) for (key, value) in
                                item_cfg.items() if key not in
                                NETWORK_V2_KEY_FILTER)
+            # we accept the fixed spelling, but write the old for compatability
+            # Xenial does not have an updated netplan which supports the
+            # correct spelling.  LP: #1756701
+            params = item_params['parameters']
+            grat_value = params.pop('gratuitous-arp', None)
+            if grat_value:
+                params['gratuitious-arp'] = grat_value
+
             v1_cmd = {
                 'type': cmd_type,
                 'name': item_name,
@@ -689,6 +737,8 @@ class NetworkStateInterpreter(object):
                 'params': dict((v2key_to_v1[k], v) for k, v in
                                item_params.get('parameters', {}).items())
             }
+            if 'mtu' in item_cfg:
+                v1_cmd['mtu'] = item_cfg['mtu']
             subnets = self._v2_to_v1_ipcfg(item_cfg)
             if len(subnets) > 0:
                 v1_cmd.update({'subnets': subnets})
@@ -705,12 +755,20 @@ class NetworkStateInterpreter(object):
     def _v2_to_v1_ipcfg(self, cfg):
         """Common ipconfig extraction from v2 to v1 subnets array."""
 
+        def _add_dhcp_overrides(overrides, subnet):
+            if 'route-metric' in overrides:
+                subnet['metric'] = overrides['route-metric']
+
         subnets = []
-        if 'dhcp4' in cfg:
-            subnets.append({'type': 'dhcp4'})
-        if 'dhcp6' in cfg:
+        if cfg.get('dhcp4'):
+            subnet = {'type': 'dhcp4'}
+            _add_dhcp_overrides(cfg.get('dhcp4-overrides', {}), subnet)
+            subnets.append(subnet)
+        if cfg.get('dhcp6'):
+            subnet = {'type': 'dhcp6'}
             self.use_ipv6 = True
-            subnets.append({'type': 'dhcp6'})
+            _add_dhcp_overrides(cfg.get('dhcp6-overrides', {}), subnet)
+            subnets.append(subnet)
 
         gateway4 = None
         gateway6 = None
@@ -877,9 +935,10 @@ def is_ipv6_addr(address):
 
 def subnet_is_ipv6(subnet):
     """Common helper for checking network_state subnets for ipv6."""
-    # 'static6' or 'dhcp6'
-    if subnet['type'].endswith('6'):
-        # This is a request for DHCPv6.
+    # 'static6', 'dhcp6', 'ipv6_dhcpv6-stateful', 'ipv6_dhcpv6-stateless' or
+    # 'ipv6_slaac'
+    if subnet['type'].endswith('6') or subnet['type'] in IPV6_DYNAMIC_TYPES:
+        # This is a request either static6 type or DHCPv6.
         return True
     elif subnet['type'] == 'static' and is_ipv6_addr(subnet.get('address')):
         return True
@@ -908,7 +967,7 @@ def ipv4_mask_to_net_prefix(mask):
     """
     if isinstance(mask, int):
         return mask
-    if isinstance(mask, six.string_types):
+    if isinstance(mask, str):
         try:
             return int(mask)
         except ValueError:
@@ -935,7 +994,7 @@ def ipv6_mask_to_net_prefix(mask):
 
     if isinstance(mask, int):
         return mask
-    if isinstance(mask, six.string_types):
+    if isinstance(mask, str):
         try:
             return int(mask)
         except ValueError:

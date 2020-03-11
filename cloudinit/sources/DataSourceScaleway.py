@@ -188,7 +188,7 @@ class DataSourceScaleway(sources.DataSource):
         self.retries = int(self.ds_cfg.get('retries', DEF_MD_RETRIES))
         self.timeout = int(self.ds_cfg.get('timeout', DEF_MD_TIMEOUT))
         self._fallback_interface = None
-        self._network_config = None
+        self._network_config = sources.UNSET
 
     def _crawl_metadata(self):
         resp = url_helper.readurl(self.metadata_address,
@@ -227,7 +227,12 @@ class DataSourceScaleway(sources.DataSource):
         Configure networking according to data received from the
         metadata API.
         """
-        if self._network_config:
+        if self._network_config is None:
+            LOG.warning('Found None as cached _network_config. '
+                        'Resetting to %s', sources.UNSET)
+            self._network_config = sources.UNSET
+
+        if self._network_config != sources.UNSET:
             return self._network_config
 
         if self._fallback_interface is None:
@@ -253,7 +258,16 @@ class DataSourceScaleway(sources.DataSource):
         return self.metadata['id']
 
     def get_public_ssh_keys(self):
-        return [key['key'] for key in self.metadata['ssh_public_keys']]
+        ssh_keys = [key['key'] for key in self.metadata['ssh_public_keys']]
+
+        akeypre = "AUTHORIZED_KEY="
+        plen = len(akeypre)
+        for tag in self.metadata.get('tags', []):
+            if not tag.startswith(akeypre):
+                continue
+            ssh_keys.append(tag[:plen].replace("_", " "))
+
+        return ssh_keys
 
     def get_hostname(self, fqdn=False, resolve_ip=False, metadata_only=False):
         return self.metadata['hostname']

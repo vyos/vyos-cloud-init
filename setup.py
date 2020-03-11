@@ -30,6 +30,8 @@ VARIANT = None
 def is_f(p):
     return os.path.isfile(p)
 
+def is_generator(p):
+    return '-generator' in p
 
 def tiny_p(cmd, capture=True):
     # Darn python 2.6 doesn't have check_output (argggg)
@@ -90,7 +92,7 @@ def read_requires():
     return str(deps).splitlines()
 
 
-def render_tmpl(template):
+def render_tmpl(template, mode=None):
     """render template into a tmpdir under same dir as setup.py
 
     This is rendered to a temporary directory under the top level
@@ -119,6 +121,8 @@ def render_tmpl(template):
             VARIANT, template, fpath])
     else:
         tiny_p([sys.executable, './tools/render-cloudcfg', template, fpath])
+    if mode:
+        os.chmod(fpath, mode)
     # return path relative to setup.py
     return os.path.join(os.path.basename(tmpd), bname)
 
@@ -138,8 +142,11 @@ INITSYS_FILES = {
     'systemd': [render_tmpl(f)
                 for f in (glob('systemd/*.tmpl') +
                           glob('systemd/*.service') +
-                          glob('systemd/*.target')) if is_f(f)],
-    'systemd.generators': [f for f in glob('systemd/*-generator') if is_f(f)],
+                          glob('systemd/*.target'))
+                if (is_f(f) and not is_generator(f))],
+    'systemd.generators': [
+        render_tmpl(f, mode=0o755)
+        for f in glob('systemd/*') if is_f(f) and is_generator(f)],
     'upstart': [f for f in glob('upstart/*') if is_f(f)],
 }
 INITSYS_ROOTS = {
@@ -167,6 +174,19 @@ if os.uname()[0] == 'FreeBSD':
     USR_LIB_EXEC = "usr/local/lib"
 elif os.path.isfile('/etc/redhat-release'):
     USR_LIB_EXEC = "usr/libexec"
+elif os.path.isfile('/etc/system-release-cpe'):
+    with open('/etc/system-release-cpe') as f:
+        cpe_data = f.read().rstrip().split(':')
+
+        if cpe_data[1] == "\o":
+            # URI formated CPE
+            inc = 0
+        else:
+            # String formated CPE
+            inc = 1
+        (cpe_vendor, cpe_product, cpe_version) = cpe_data[2+inc:5+inc]
+        if cpe_vendor == "amazon":
+            USR_LIB_EXEC = "usr/libexec"
 
 
 class MyEggInfo(egg_info):
@@ -238,13 +258,14 @@ if not in_virtualenv():
         INITSYS_ROOTS[k] = "/" + INITSYS_ROOTS[k]
 
 data_files = [
-    (ETC + '/bash_completion.d', ['bash_completion/cloud-init']),
     (ETC + '/cloud', [render_tmpl("config/cloud.cfg.tmpl")]),
     (ETC + '/cloud/cloud.cfg.d', glob('config/cloud.cfg.d/*')),
     (ETC + '/cloud/templates', glob('templates/*')),
     (USR_LIB_EXEC + '/cloud-init', ['tools/ds-identify',
                                     'tools/uncloud-init',
                                     'tools/write-ssh-key-fingerprints']),
+    (USR + '/share/bash-completion/completions',
+     ['bash_completion/cloud-init']),
     (USR + '/share/doc/cloud-init', [f for f in glob('doc/*') if is_f(f)]),
     (USR + '/share/doc/cloud-init/examples',
         [f for f in glob('doc/examples/*') if is_f(f)]),

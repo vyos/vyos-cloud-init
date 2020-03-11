@@ -10,7 +10,7 @@ from cloudinit.tests.helpers import CiTestCase, mock, skipUnlessJsonSchema
 
 from copy import copy
 import os
-from six import StringIO
+from io import StringIO
 from textwrap import dedent
 from yaml import safe_load
 
@@ -28,6 +28,7 @@ class GetSchemaTest(CiTestCase):
                 'cc_runcmd',
                 'cc_snap',
                 'cc_ubuntu_advantage',
+                'cc_ubuntu_drivers',
                 'cc_zypper_add_repo'
             ],
             [subschema['id'] for subschema in schema['allOf']])

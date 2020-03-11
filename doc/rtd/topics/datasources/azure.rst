@@ -5,9 +5,30 @@ Azure
 
 This datasource finds metadata and user-data from the Azure cloud platform.
 
-Azure Platform
---------------
-The azure cloud-platform provides initial data to an instance via an attached
+walinuxagent
+------------
+walinuxagent has several functions within images.  For cloud-init
+specifically, the relevant functionality it performs is to register the
+instance with the Azure cloud platform at boot so networking will be
+permitted.  For more information about the other functionality of
+walinuxagent, see `Azure's documentation
+<https://github.com/Azure/WALinuxAgent#introduction>`_ for more details.
+(Note, however, that only one of walinuxagent's provisioning and cloud-init
+should be used to perform instance customisation.)
+
+If you are configuring walinuxagent yourself, you will want to ensure that you
+have `Provisioning.UseCloudInit
+<https://github.com/Azure/WALinuxAgent#provisioningusecloudinit>`_ set to
+``y``.
+
+
+Builtin Agent
+-------------
+An alternative to using walinuxagent to register to the Azure cloud platform
+is to use the ``__builtin__`` agent command.  This section contains more
+background on what that code path does, and how to enable it.
+
+The Azure cloud platform provides initial data to an instance via an attached
 CD formatted in UDF.  That CD contains a 'ovf-env.xml' file that provides some
 information.  Additional information is obtained via interaction with the
 "endpoint".
@@ -23,44 +44,36 @@ information in json format to /run/cloud-init/dhclient.hook/<interface>.json.
 In order for cloud-init to leverage this method to find the endpoint, the
 cloud.cfg file must contain:
 
-datasource:
-  Azure:
-    set_hostname: False
-    agent_command: __builtin__
+.. sourcecode:: yaml
+
+  datasource:
+    Azure:
+      set_hostname: False
+      agent_command: __builtin__
 
 If those files are not available, the fallback is to check the leases file
 for the endpoint server (again option 245).
 
 You can define the path to the lease file with the 'dhclient_lease_file'
-configuration.  The default value is /var/lib/dhcp/dhclient.eth0.leases.
+configuration.
 
-    dhclient_lease_file: /var/lib/dhcp/dhclient.eth0.leases
 
-walinuxagent
-------------
-In order to operate correctly, cloud-init needs walinuxagent to provide much
-of the interaction with azure.  In addition to "provisioning" code, walinux
-does the following on the agent is a long running daemon that handles the
-following things:
-- generate a x509 certificate and send that to the endpoint
+IMDS
+----
+Azure provides the `instance metadata service (IMDS)
+<https://docs.microsoft.com/en-us/azure/virtual-machines/windows/instance-metadata-service>`_
+which is a REST service on ``169.254.169.254`` providing additional
+configuration information to the instance. Cloud-init uses the IMDS for:
 
-waagent.conf config
-^^^^^^^^^^^^^^^^^^^
-in order to use waagent.conf with cloud-init, the following settings are recommended.  Other values can be changed or set to the defaults.
-
-  ::
-
-   # disabling provisioning turns off all 'Provisioning.*' function
-   Provisioning.Enabled=n
-   # this is currently not handled by cloud-init, so let walinuxagent do it.
-   ResourceDisk.Format=y
-   ResourceDisk.MountPoint=/mnt
+- network configuration for the instance which is applied per boot
+- a preprovisioing gate which blocks instance configuration until Azure fabric
+  is ready to provision
 
 
 Configuration
 -------------
 The following configuration can be set for the datasource in system
-configuration (in `/etc/cloud/cloud.cfg` or `/etc/cloud/cloud.cfg.d/`).
+configuration (in ``/etc/cloud/cloud.cfg`` or ``/etc/cloud/cloud.cfg.d/``).
 
 The settings that may be configured are:
 
@@ -69,19 +82,32 @@ The settings that may be configured are:
    provided command to obtain metadata.
  * **apply_network_config**: Boolean set to True to use network configuration
    described by Azure's IMDS endpoint instead of fallback network config of
-   dhcp on eth0. Default is True. For Ubuntu 16.04 or earlier, default is False.
+   dhcp on eth0. Default is True. For Ubuntu 16.04 or earlier, default is
+   False.
  * **data_dir**: Path used to read metadata files and write crawled data.
  * **dhclient_lease_file**: The fallback lease file to source when looking for
    custom DHCP option 245 from Azure fabric.
  * **disk_aliases**: A dictionary defining which device paths should be
    interpreted as ephemeral images. See cc_disk_setup module for more info.
  * **hostname_bounce**: A dictionary Azure hostname bounce behavior to react to
-   metadata changes.
+   metadata changes.  The '``hostname_bounce: command``' entry can be either
+   the literal string 'builtin' or a command to execute.  The command will be
+   invoked after the hostname is set, and will have the 'interface' in its
+   environment.  If ``set_hostname`` is not true, then ``hostname_bounce``
+   will be ignored.  An example might be:
+
+     ``command:  ["sh", "-c", "killall dhclient; dhclient $interface"]``
+
  * **hostname_bounce**: A dictionary Azure hostname bounce behavior to react to
    metadata changes. Azure will throttle ifup/down in some cases after metadata
    has been updated to inform dhcp server about updated hostnames.
  * **set_hostname**: Boolean set to True when we want Azure to set the hostname
    based on metadata.
+
+Configuration for the datasource can also be read from a
+``dscfg`` entry in the ``LinuxProvisioningConfigurationSet``.  Content in
+dscfg node is expected to be base64 encoded yaml content, and it will be
+merged into the 'datasource: Azure' entry.
 
 An example configuration with the default values is provided below:
 
@@ -142,37 +168,6 @@ Example:
    </SSH>
    </LinuxProvisioningConfigurationSet>
  </wa:ProvisioningSection>
-
-Configuration
--------------
-Configuration for the datasource can be read from the system config's or set
-via the `dscfg` entry in the `LinuxProvisioningConfigurationSet`.  Content in
-dscfg node is expected to be base64 encoded yaml content, and it will be
-merged into the 'datasource: Azure' entry.
-
-The '``hostname_bounce: command``' entry can be either the literal string
-'builtin' or a command to execute.  The command will be invoked after the
-hostname is set, and will have the 'interface' in its environment.  If
-``set_hostname`` is not true, then ``hostname_bounce`` will be ignored.
-
-An example might be:
-  command:  ["sh", "-c", "killall dhclient; dhclient $interface"]
-
-.. code:: yaml
-
-  datasource:
-   agent_command
-   Azure:
-    agent_command: [service, walinuxagent, start]
-    set_hostname: True
-    hostname_bounce:
-     # the name of the interface to bounce
-     interface: eth0
-     # policy can be 'on', 'off' or 'force'
-     policy: on
-     # the method 'bounce' command.
-     command: "builtin"
-     hostname_command: "hostname"
 
 hostname
 --------

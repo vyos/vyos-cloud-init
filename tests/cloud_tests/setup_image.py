@@ -222,13 +222,14 @@ def setup_image(args, image):
              for name, func, desc in handlers if getattr(args, name, None)]
 
     try:
-        data = yaml.load(image.read_data("/etc/cloud/build.info", decode=True))
+        data = yaml.safe_load(
+            image.read_data("/etc/cloud/build.info", decode=True))
         info = ' '.join(["%s=%s" % (k, data.get(k))
                          for k in ("build_name", "serial") if k in data])
     except Exception as e:
         info = "N/A (%s)" % e
 
-    LOG.info('setting up %s (%s)', image, info)
+    LOG.info('setting up image %s (info %s)', image, info)
     res = stage.run_stage(
         'set up for {}'.format(image), calls, continue_after_error=False)
     return res

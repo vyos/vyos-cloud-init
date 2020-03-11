@@ -50,12 +50,11 @@ user scripts configuration directory, to be run later by ``cc_scripts_user``.
 #
 
 import os
+from urllib.parse import parse_qs
 
 from cloudinit.settings import PER_INSTANCE
 from cloudinit import url_helper as uhelp
 from cloudinit import util
-
-from six.moves.urllib_parse import parse_qs
 
 frequency = PER_INSTANCE
 
@@ -111,8 +110,8 @@ def handle(name, _cfg, cloud, log, _args):
         log.debug("%s urls were skipped or failed", skipped)
 
     if captured_excps:
-        log.warn("%s failed with exceptions, re-raising the last one",
-                 len(captured_excps))
+        log.warning("%s failed with exceptions, re-raising the last one",
+                    len(captured_excps))
         raise captured_excps[-1]
 
 # vi: ts=4 expandtab

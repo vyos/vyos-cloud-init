@@ -8,17 +8,15 @@
 #
 # This file is part of cloud-init. See LICENSE file for license information.
 
-from xml.dom import minidom
-
 import base64
 import os
 import re
 import time
+from xml.dom import minidom
 
 from cloudinit import log as logging
 from cloudinit import sources
 from cloudinit import util
-
 from cloudinit.sources.helpers.vmware.imc.config \
     import Config
 from cloudinit.sources.helpers.vmware.imc.config_custom_script \
@@ -38,10 +36,14 @@ from cloudinit.sources.helpers.vmware.imc.guestcust_state \
 from cloudinit.sources.helpers.vmware.imc.guestcust_util import (
     enable_nics,
     get_nics_to_enable,
-    set_customization_status
+    set_customization_status,
+    get_tools_config
 )
 
 LOG = logging.getLogger(__name__)
+
+CONFGROUPNAME_GUESTCUSTOMIZATION = "deployPkg"
+GUESTCUSTOMIZATION_ENABLE_CUST_SCRIPTS = "enable-custom-scripts"
 
 
 class DataSourceOVF(sources.DataSource):
@@ -103,8 +105,7 @@ class DataSourceOVF(sources.DataSource):
                 plugin = "libdeployPkgPlugin.so"
                 deployPkgPluginPath = None
                 for path in search_paths:
-                    # Ignore deployPkgPluginPath for now.
-                    #deployPkgPluginPath = search_file(path, plugin)
+                    deployPkgPluginPath = search_file(path, plugin)
                     if deployPkgPluginPath:
                         LOG.debug("Found the customization plugin at %s",
                                   deployPkgPluginPath)
@@ -147,6 +148,24 @@ class DataSourceOVF(sources.DataSource):
                     product_marker, os.path.join(self.paths.cloud_dir, 'data'))
                 special_customization = product_marker and not hasmarkerfile
                 customscript = self._vmware_cust_conf.custom_script_name
+                custScriptConfig = get_tools_config(
+                    CONFGROUPNAME_GUESTCUSTOMIZATION,
+                    GUESTCUSTOMIZATION_ENABLE_CUST_SCRIPTS,
+                    "false")
+                if custScriptConfig.lower() != "true":
+                    # Update the customization status if there is a
+                    # custom script is disabled
+                    if special_customization and customscript:
+                        msg = "Custom script is disabled by VM Administrator"
+                        LOG.debug(msg)
+                        set_customization_status(
+                            GuestCustStateEnum.GUESTCUST_STATE_RUNNING,
+                            GuestCustErrorEnum.GUESTCUST_ERROR_SCRIPT_DISABLED)
+                        raise RuntimeError(msg)
+
+                ccScriptsDir = os.path.join(
+                    self.paths.get_cpath("scripts"),
+                    "per-instance")
             except Exception as e:
                 _raise_error_status(
                     "Error parsing the customization Config File",
@@ -200,7 +219,9 @@ class DataSourceOVF(sources.DataSource):
 
                 if customscript:
                     try:
-                        postcust = PostCustomScript(customscript, imcdirpath)
+                        postcust = PostCustomScript(customscript,
+                                                    imcdirpath,
+                                                    ccScriptsDir)
                         postcust.execute()
                     except Exception as e:
                         _raise_error_status(
@@ -381,9 +402,7 @@ def read_vmware_imc(config):
     if config.timezone:
         cfg['timezone'] = config.timezone
 
-    # Generate a unique instance-id so that re-customization will
-    # happen in cloud-init
-    md['instance-id'] = "iid-vmware-" + util.rand_str(strlen=8)
+    md['instance-id'] = "iid-vmware-imc"
     return (md, ud, cfg)
 
 
@@ -436,7 +455,7 @@ def maybe_cdrom_device(devname):
     """
     if not devname:
         return False
-    elif not isinstance(devname, util.string_types):
+    elif not isinstance(devname, str):
         raise ValueError("Unexpected input for devname: %s" % devname)
 
     # resolve '..' and multi '/' elements

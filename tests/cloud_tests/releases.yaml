@@ -55,6 +55,8 @@ default_release_config:
             # cloud-init, so must pull cloud-init in from repo using
             # setup_image.upgrade
             upgrade: true
+    azurecloud:
+        boot_timeout: 300
 
 features:
     # all currently supported feature flags
@@ -129,6 +131,22 @@ features:
 
 releases:
     # UBUNTU =================================================================
+    eoan:
+        # EOL: Jul 2020
+        default:
+            enabled: true
+            release: eoan
+            version: 19.10
+            os: ubuntu
+            feature_groups:
+                - base
+                - debian_base
+                - ubuntu_specific
+        lxd:
+            sstreams_server: https://cloud-images.ubuntu.com/daily
+            alias: eoan
+            setup_overrides: null
+            override_templates: false
     disco:
         # EOL: Jan 2020
         default:

@@ -3,6 +3,8 @@
 Description=Initial cloud-init job (metadata service crawler)
 DefaultDependencies=no
 Wants=cloud-init-local.service
+Wants=sshd-keygen.service
+Wants=sshd.service
 After=cloud-init-local.service
 After=systemd-networkd-wait-online.service
 {% if variant in ["ubuntu", "unknown", "debian"] %}
@@ -10,14 +12,17 @@ After=networking.service
 {% endif %}
 {% if variant in ["centos", "fedora", "redhat"] %}
 After=network.service
+After=NetworkManager.service
 {% endif %}
 {% if variant in ["suse"] %}
-Before=wicked.service
+After=wicked.service
 # setting hostname via hostnamectl depends on dbus, which otherwise
 # would not be guaranteed at this point.
 After=dbus.service
 {% endif %}
 Before=network-online.target
+Before=sshd-keygen.service
+Before=sshd.service
 {% if variant in ["ubuntu", "unknown", "debian"] %}
 Before=sysinit.target
 Conflicts=shutdown.target

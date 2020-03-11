@@ -2,7 +2,9 @@
 
 """Tests for cloudinit.util"""
 
+import base64
 import logging
+import json
 import platform
 
 import cloudinit.util as util
@@ -185,6 +187,21 @@ class TestUtil(CiTestCase):
         m_mount_info.return_value = ('/dev/sda1', 'btrfs', '/', 'ro,relatime')
         is_rw = util.mount_is_read_write('/')
         self.assertEqual(is_rw, False)
+
+
+class TestUptime(CiTestCase):
+
+    @mock.patch('cloudinit.util.boottime')
+    @mock.patch('cloudinit.util.os.path.exists')
+    @mock.patch('cloudinit.util.time.time')
+    def test_uptime_non_linux_path(self, m_time, m_exists, m_boottime):
+        boottime = 1000.0
+        uptime = 10.0
+        m_boottime.return_value = boottime
+        m_time.return_value = boottime + uptime
+        m_exists.return_value = False
+        result = util.uptime()
+        self.assertEqual(str(uptime), result)
 
 
 class TestShellify(CiTestCase):
@@ -385,6 +402,11 @@ class TestUdevadmSettle(CiTestCase):
 @mock.patch('os.path.exists')
 class TestGetLinuxDistro(CiTestCase):
 
+    def setUp(self):
+        # python2 has no lru_cache, and therefore, no cache_clear()
+        if hasattr(util.get_linux_distro, "cache_clear"):
+            util.get_linux_distro.cache_clear()
+
     @classmethod
     def os_release_exists(self, path):
         """Side effect function"""
@@ -395,6 +417,12 @@ class TestGetLinuxDistro(CiTestCase):
     def redhat_release_exists(self, path):
         """Side effect function """
         if path == '/etc/redhat-release':
+            return 1
+
+    @classmethod
+    def freebsd_version_exists(self, path):
+        """Side effect function """
+        if path == '/bin/freebsd-version':
             return 1
 
     @mock.patch('cloudinit.util.load_file')
@@ -414,6 +442,14 @@ class TestGetLinuxDistro(CiTestCase):
         m_path_exists.side_effect = TestGetLinuxDistro.os_release_exists
         dist = util.get_linux_distro()
         self.assertEqual(('ubuntu', '16.04', 'xenial'), dist)
+
+    @mock.patch('cloudinit.util.subp')
+    def test_get_linux_freebsd(self, m_subp, m_path_exists):
+        """Verify we get the correct name and release name on FreeBSD."""
+        m_path_exists.side_effect = TestGetLinuxDistro.freebsd_version_exists
+        m_subp.return_value = ("12.0-RELEASE-p10\n", '')
+        dist = util.get_linux_distro()
+        self.assertEqual(('freebsd', '12.0-RELEASE-p10', ''), dist)
 
     @mock.patch('cloudinit.util.load_file')
     def test_get_linux_centos6(self, m_os_release, m_path_exists):
@@ -502,7 +538,7 @@ class TestGetLinuxDistro(CiTestCase):
         self.assertEqual(
             ('opensuse-tumbleweed', '20180920', platform.machine()), dist)
 
-    @mock.patch('platform.dist')
+    @mock.patch('platform.dist', create=True)
     def test_get_linux_distro_no_data(self, m_platform_dist, m_path_exists):
         """Verify we get no information if os-release does not exist"""
         m_platform_dist.return_value = ('', '', '')
@@ -510,7 +546,7 @@ class TestGetLinuxDistro(CiTestCase):
         dist = util.get_linux_distro()
         self.assertEqual(('', '', ''), dist)
 
-    @mock.patch('platform.dist')
+    @mock.patch('platform.dist', create=True)
     def test_get_linux_distro_no_impl(self, m_platform_dist, m_path_exists):
         """Verify we get an empty tuple when no information exists and
         Exceptions are not propagated"""
@@ -519,13 +555,31 @@ class TestGetLinuxDistro(CiTestCase):
         dist = util.get_linux_distro()
         self.assertEqual(('', '', ''), dist)
 
-    @mock.patch('platform.dist')
+    @mock.patch('platform.dist', create=True)
     def test_get_linux_distro_plat_data(self, m_platform_dist, m_path_exists):
         """Verify we get the correct platform information"""
         m_platform_dist.return_value = ('foo', '1.1', 'aarch64')
         m_path_exists.return_value = 0
         dist = util.get_linux_distro()
         self.assertEqual(('foo', '1.1', 'aarch64'), dist)
+
+
+class TestJsonDumps(CiTestCase):
+    def test_is_str(self):
+        """json_dumps should return a string."""
+        self.assertTrue(isinstance(util.json_dumps({'abc': '123'}), str))
+
+    def test_utf8(self):
+        smiley = '\\ud83d\\ude03'
+        self.assertEqual(
+            {'smiley': smiley},
+            json.loads(util.json_dumps({'smiley': smiley})))
+
+    def test_non_utf8(self):
+        blob = b'\xba\x03Qx-#y\xea'
+        self.assertEqual(
+            {'blob': 'ci-b64:' + base64.b64encode(blob).decode('utf-8')},
+            json.loads(util.json_dumps({'blob': blob})))
 
 
 @mock.patch('os.path.exists')

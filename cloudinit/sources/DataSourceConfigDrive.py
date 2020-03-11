@@ -72,15 +72,12 @@ class DataSourceConfigDrive(openstack.SourceMixin, sources.DataSource):
             dslist = self.sys_cfg.get('datasource_list')
             for dev in find_candidate_devs(dslist=dslist):
                 try:
-                    # Set mtype if freebsd and turn off sync
-                    if dev.startswith("/dev/cd"):
+                    if util.is_FreeBSD() and dev.startswith("/dev/cd"):
                         mtype = "cd9660"
-                        sync = False
                     else:
                         mtype = None
-                        sync = True
                     results = util.mount_cb(dev, read_config_drive,
-                                            mtype=mtype, sync=sync)
+                                            mtype=mtype)
                     found = dev
                 except openstack.NonReadable:
                     pass
@@ -166,10 +163,10 @@ class DataSourceConfigDrive(openstack.SourceMixin, sources.DataSource):
 
     def _get_subplatform(self):
         """Return the subplatform metadata source details."""
-        if self.seed_dir in self.source:
-            subplatform_type = 'seed-dir'
-        elif self.source.startswith('/dev'):
+        if self.source.startswith('/dev'):
             subplatform_type = 'config-disk'
+        else:
+            subplatform_type = 'seed-dir'
         return '%s (%s)' % (subplatform_type, self.source)
 
 
@@ -237,7 +234,7 @@ def find_candidate_devs(probe_optical=True, dslist=None):
 
     config drive v2:
        Disk should be:
-        * either vfat or iso9660 formated
+        * either vfat or iso9660 formatted
         * labeled with 'config-2' or 'CONFIG-2'
     """
     if dslist is None:

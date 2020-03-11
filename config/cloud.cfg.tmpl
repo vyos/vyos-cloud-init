@@ -2,15 +2,30 @@
 # The top level settings are used as module
 # and system configuration.
 
-datasource:
-  Azure:
-    agent_command: [/usr/bin/python3, -u, /usr/sbin/waagent, -start]
+# A set of users which may be applied and/or used by various modules
+# when a 'default' entry is found it will reference the 'default_user'
+# from the distro configuration specified below
+users:
+   - default
 
 # This will cause the set+update hostname module to not operate (if true)
 preserve_hostname: true
 
-users:
-   - default
+# Example datasource config
+# datasource:
+#    Ec2:
+#      metadata_urls: [ 'blah.com' ]
+#      timeout: 5 # (defaults to 50 seconds)
+#      max_wait: 10 # (defaults to 120 seconds)
+datasource:
+  Azure:
+    agent_command: [/usr/bin/python3, -u, /usr/sbin/waagent, -start]
+
+# disable customization for VMware
+disable_vmware_customization: true
+
+# The modules that run in the 'init' stage
+cloud_init_modules:
 
 # The modules that run in the 'config' stage
 cloud_config_modules:

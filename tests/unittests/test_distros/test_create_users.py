@@ -206,7 +206,7 @@ class TestCreateUser(CiTestCase):
         user = 'foouser'
         self.dist.create_user(user, ssh_redirect_user='someuser')
         self.assertIn(
-            'WARNING: Unable to disable ssh logins for foouser given '
+            'WARNING: Unable to disable SSH logins for foouser given '
             'ssh_redirect_user: someuser. No cloud public-keys present.\n',
             self.logs.getvalue())
         m_setup_user_keys.assert_not_called()
@@ -239,5 +239,33 @@ class TestCreateUser(CiTestCase):
             m_setup_user_keys.call_args_list,
             [mock.call(set(['auth1']), user),  # not disabled
              mock.call(set(['key1']), 'foouser', options=disable_prefix)])
+
+    @mock.patch("cloudinit.distros.util.which")
+    def test_lock_with_usermod_if_no_passwd(self, m_which, m_subp,
+                                            m_is_snappy):
+        """Lock uses usermod --lock if no 'passwd' cmd available."""
+        m_which.side_effect = lambda m: m in ('usermod',)
+        self.dist.lock_passwd("bob")
+        self.assertEqual(
+            [mock.call(['usermod', '--lock', 'bob'])],
+            m_subp.call_args_list)
+
+    @mock.patch("cloudinit.distros.util.which")
+    def test_lock_with_passwd_if_available(self, m_which, m_subp,
+                                           m_is_snappy):
+        """Lock with only passwd will use passwd."""
+        m_which.side_effect = lambda m: m in ('passwd',)
+        self.dist.lock_passwd("bob")
+        self.assertEqual(
+            [mock.call(['passwd', '-l', 'bob'])],
+            m_subp.call_args_list)
+
+    @mock.patch("cloudinit.distros.util.which")
+    def test_lock_raises_runtime_if_no_commands(self, m_which, m_subp,
+                                                m_is_snappy):
+        """Lock with no commands available raises RuntimeError."""
+        m_which.return_value = None
+        with self.assertRaises(RuntimeError):
+            self.dist.lock_passwd("bob")
 
 # vi: ts=4 expandtab

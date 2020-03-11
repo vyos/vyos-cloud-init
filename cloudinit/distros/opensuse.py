@@ -37,7 +37,10 @@ class Distro(distros.Distro):
     renderer_configs = {
         'sysconfig': {
             'control': 'etc/sysconfig/network/config',
+            'flavor': 'suse',
             'iface_templates': '%(base)s/network/ifcfg-%(name)s',
+            'netrules_path': (
+                'etc/udev/rules.d/85-persistent-net-cloud-init.rules'),
             'route_templates': {
                 'ipv4': '%(base)s/network/ifroute-%(name)s',
                 'ipv6': '%(base)s/network/ifroute-%(name)s',

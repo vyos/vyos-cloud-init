@@ -5,7 +5,7 @@ from cloudinit.util import ensure_dir, sym_link, write_file
 from cloudinit.tests.helpers import CiTestCase, wrap_and_call, mock
 from collections import namedtuple
 import os
-from six import StringIO
+from io import StringIO
 
 mypaths = namedtuple('MyPaths', 'cloud_dir')
 
@@ -22,7 +22,8 @@ class TestClean(CiTestCase):
         class FakeInit(object):
             cfg = {'def_log_file': self.log1,
                    'output': {'all': '|tee -a {0}'.format(self.log2)}}
-            paths = mypaths(cloud_dir=self.artifact_dir)
+            # Ensure cloud_dir has a trailing slash, to match real behaviour
+            paths = mypaths(cloud_dir='{}/'.format(self.artifact_dir))
 
             def __init__(self, ds_deps):
                 pass
@@ -136,7 +137,8 @@ class TestClean(CiTestCase):
                 clean.remove_artifacts, remove_logs=False)
         self.assertEqual(1, retcode)
         self.assertEqual(
-            'ERROR: Could not remove dir1: oops\n', m_stderr.getvalue())
+            'ERROR: Could not remove %s/dir1: oops\n' % self.artifact_dir,
+            m_stderr.getvalue())
 
     def test_handle_clean_args_reboots(self):
         """handle_clean_args_reboots when reboot arg is provided."""

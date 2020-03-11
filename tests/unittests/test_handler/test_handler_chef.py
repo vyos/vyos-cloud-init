@@ -4,7 +4,6 @@ import httpretty
 import json
 import logging
 import os
-import six
 
 from cloudinit import cloud
 from cloudinit.config import cc_chef
@@ -145,6 +144,7 @@ class TestChef(FilesystemMockingTestCase):
         file_backup_path       "/var/backups/chef"
         pid_file               "/var/run/chef/client.pid"
         Chef::Log::Formatter.show_time = true
+        encrypted_data_bag_secret  "/etc/chef/encrypted_data_bag_secret"
         """
         tpl_file = util.load_file('templates/chef_client.rb.tmpl')
         self.patchUtils(self.tmp)
@@ -157,6 +157,8 @@ class TestChef(FilesystemMockingTestCase):
                 'validation_name': 'bob',
                 'validation_key': "/etc/chef/vkey.pem",
                 'validation_cert': "this is my cert",
+                'encrypted_data_bag_secret':
+                    '/etc/chef/encrypted_data_bag_secret'
             },
         }
         cc_chef.handle('chef', cfg, self.fetch_cloud('ubuntu'), LOG, [])
@@ -175,7 +177,7 @@ class TestChef(FilesystemMockingTestCase):
                 continue
             # the value from the cfg overrides that in the default
             val = cfg['chef'].get(k, v)
-            if isinstance(val, six.string_types):
+            if isinstance(val, str):
                 self.assertIn(val, c)
         c = util.load_file(cc_chef.CHEF_FB_PATH)
         self.assertEqual({}, json.loads(c))
