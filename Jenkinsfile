@@ -107,16 +107,6 @@ pipeline {
                 }
             }
         }
-        stage('Install missed dependencies') {
-            steps {
-                script {
-                    dir('build') {
-                        sh 'sudo apt update'
-                        sh 'sudo apt install -y python3-jsonschema python3-contextlib2 cloud-utils'
-                    }
-                }
-            }
-        }
         stage('Build') {
             steps {
                 script {
