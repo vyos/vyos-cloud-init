@@ -126,54 +126,56 @@ pipeline {
         }
         success {
             script {
-                // archive *.deb artifact on custom builds, deploy to repo otherwise
-                if ( isCustomBuild()) {
-                    archiveArtifacts artifacts: 'cloud-init_*_all.deb', fingerprint: true
-                } else {
-                    // publish build result, using SSH-dev.packages.vyos.net Jenkins Credentials
-                    sshagent(['SSH-dev.packages.vyos.net']) {
-                        // build up some fancy groovy variables so we do not need to write/copy
-                        // every option over and over again!
-                        def RELEASE = getGitBranchName()
-                        if (getGitBranchName() == "master") {
-                            RELEASE = 'current'
-                        }
+                dir('build') {
+                    // archive *.deb artifact on custom builds, deploy to repo otherwise
+                    if ( isCustomBuild()) {
+                        archiveArtifacts artifacts: 'cloud-init_*_all.deb', fingerprint: true
+                    } else {
+                        // publish build result, using SSH-dev.packages.vyos.net Jenkins Credentials
+                        sshagent(['SSH-dev.packages.vyos.net']) {
+                            // build up some fancy groovy variables so we do not need to write/copy
+                            // every option over and over again!
+                            def RELEASE = getGitBranchName()
+                            if (getGitBranchName() == "master") {
+                                RELEASE = 'current'
+                            }
 
-                        def VYOS_REPO_PATH = '/home/sentrium/web/dev.packages.vyos.net/public_html/repositories/' + RELEASE + '/'
-                        if (getGitBranchName() == "crux")
-                            VYOS_REPO_PATH += 'vyos/'
+                            def VYOS_REPO_PATH = '/home/sentrium/web/dev.packages.vyos.net/public_html/repositories/' + RELEASE + '/'
+                            if (getGitBranchName() == "crux")
+                                VYOS_REPO_PATH += 'vyos/'
 
-                        def SSH_OPTS = '-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR'
-                        def SSH_REMOTE = 'khagen@10.217.48.113'
+                            def SSH_OPTS = '-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR'
+                            def SSH_REMOTE = 'khagen@10.217.48.113'
 
-                        echo "Uploading package(s) and updating package(s) in the repository ..."
+                            echo "Uploading package(s) and updating package(s) in the repository ..."
 
-                        files = findFiles(glob: 'cloud-init_*_all.deb')
-                        files.each { PACKAGE ->
-                            def ARCH = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Architecture").trim()
-                            def SUBSTRING = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Package").trim()
-                            def SSH_DIR = '~/VyOS/' + RELEASE + '/' + ARCH
-                            def ARCH_OPT = ''
-                            if (ARCH != 'all')
-                                ARCH_OPT = '-A ' + ARCH
+                            files = findFiles(glob: 'cloud-init_*_all.deb')
+                            files.each { PACKAGE ->
+                                def ARCH = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Architecture").trim()
+                                def SUBSTRING = sh(returnStdout: true, script: "dpkg-deb -f ${PACKAGE} Package").trim()
+                                def SSH_DIR = '~/VyOS/' + RELEASE + '/' + ARCH
+                                def ARCH_OPT = ''
+                                if (ARCH != 'all')
+                                    ARCH_OPT = '-A ' + ARCH
 
-                            // No need to explicitly check the return code. The pipeline
-                            // will fail if sh returns a non 0 exit code
-                            sh """
-                                ssh ${SSH_OPTS} ${SSH_REMOTE} -t "bash --login -c 'mkdir -p ${SSH_DIR}'"
-                            """
-                            sh """
-                                scp ${SSH_OPTS} ${PACKAGE} ${SSH_REMOTE}:${SSH_DIR}/
-                            """
-                            sh """
-                                ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} ${ARCH_OPT} remove ${RELEASE} ${SUBSTRING}'"
-                            """
-                            sh """
-                                ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} deleteunreferenced'"
-                            """
-                            sh """
-                                ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} ${ARCH_OPT} includedeb ${RELEASE} ${SSH_DIR}/${PACKAGE}'"
-                            """
+                                // No need to explicitly check the return code. The pipeline
+                                // will fail if sh returns a non 0 exit code
+                                sh """
+                                    ssh ${SSH_OPTS} ${SSH_REMOTE} -t "bash --login -c 'mkdir -p ${SSH_DIR}'"
+                                """
+                                sh """
+                                    scp ${SSH_OPTS} ${PACKAGE} ${SSH_REMOTE}:${SSH_DIR}/
+                                """
+                                sh """
+                                    ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} ${ARCH_OPT} remove ${RELEASE} ${SUBSTRING}'"
+                                """
+                                sh """
+                                    ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} deleteunreferenced'"
+                                """
+                                sh """
+                                    ssh ${SSH_OPTS} ${SSH_REMOTE} -t "uncron-add 'reprepro -v -b ${VYOS_REPO_PATH} ${ARCH_OPT} includedeb ${RELEASE} ${SSH_DIR}/${PACKAGE}'"
+                                """
+                            }
                         }
                     }
                 }
