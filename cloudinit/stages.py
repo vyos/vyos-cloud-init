@@ -22,6 +22,7 @@ from cloudinit.handlers.cloud_config import CloudConfigPartHandler
 from cloudinit.handlers.jinja_template import JinjaTemplatePartHandler
 from cloudinit.handlers.shell_script import ShellScriptPartHandler
 from cloudinit.handlers.upstart_job import UpstartJobPartHandler
+from cloudinit.handlers.vyos_handler import VyOSConfigPartHandler
 
 from cloudinit.event import EventType
 
@@ -421,6 +422,7 @@ class Init(object):
             shellscript_handler,
             BootHookPartHandler(**opts),
             UpstartJobPartHandler(**opts),
+            VyOSConfigPartHandler(**opts),
         ]
         opts.update(
             {'sub_handlers': [cloudconfig_handler, shellscript_handler]})

@@ -53,6 +53,8 @@ INCLUSION_TYPES_MAP = {
     '#cloud-config-archive': 'text/cloud-config-archive',
     '#cloud-config-jsonp': 'text/cloud-config-jsonp',
     '## template: jinja': 'text/jinja2',
+    '#vyos-config-plain': 'text/plain',
+    '#vyos-config-notmulti': 'text/x-not-multipart',
 }
 
 # Sorted longest first
