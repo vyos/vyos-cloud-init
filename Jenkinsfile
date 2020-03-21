@@ -117,7 +117,7 @@ pipeline {
                     dir('build') {
                         def commitId = sh(returnStdout: true, script: 'git rev-parse --short=11 HEAD').trim()
                         currentBuild.description = sprintf('Git SHA1: %s', commitId[-11..-1])
-
+                        sh 'ls -al'
                         sh './packages/bddeb'
                     }
                 }
