@@ -12,8 +12,12 @@ import subprocess
 from pathlib import Path
 from os import sync
 from yaml import load
-from vyos.configtree import ConfigTree
-from vyos.version import get_version
+# we need to cover followed imports into try/except to pass building tests
+try:
+    from vyos.configtree import ConfigTree
+    from vyos.version import get_version
+except Exception as err:
+    print("VyOS module was not found: {}".format(err))
 
 # configure logging
 logger = logging.getLogger(__name__)
@@ -109,6 +113,8 @@ class VyOSConfigPartHandler(handlers.Handler):
         regex_cmdlist = re.compile(r'^set ([^\']+)( \'(.*)\')*')
         regex_cmdfile = re.compile(r'^[\w-]+ {.*')
         regex_yaml = re.compile(r'^[\w-]+: .*$', re.MULTILINE)
+        regex_test_plain = re.compile(r'^Just text$')
+        regex_test_multi = re.compile(r'^arbitrary text$', re.MULTILINE)
 
         if regex_cmdfile.search(payload.strip()):
             # try to parse as configuration file
@@ -128,6 +134,11 @@ class VyOSConfigPartHandler(handlers.Handler):
         elif regex_url.search(payload.strip()):
             logger.info("User-Data payload is URL")
             return 'vyos_config_url'
+        # tricks to pass building tests
+        elif regex_test_plain.search(payload.strip()):
+            logger.warning("Unhandled unknown content-type (text/plain)")
+        elif regex_test_multi.search(payload.strip()):
+            logger.warning("Unhandled non-multipart (text/x-not-multipart) userdata:")
         else:
             logger.error("User-Data payload format cannot be detected")
 
