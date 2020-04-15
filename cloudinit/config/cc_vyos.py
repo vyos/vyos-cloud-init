@@ -260,11 +260,14 @@ def handle(name, cfg, cloud, log, _args):
                 key_x = key_x + 1
     else:
         encrypted_pass = False
-        for user in users:
-            password = util.get_cfg_option_str(cfg, 'passwd', None)
+        for (user, user_cfg) in users.items():
+            password = None
 
-            if not password:
-                password = util.get_cfg_option_str(cfg, 'password', None)
+            if "passwd" in user_cfg:
+                password = user_cfg["passwd"]
+
+            if "password" in user_cfg:
+                password = user_cfg["password"]
 
             if password and password != '':
                 hash = re.match("(^\$.\$)", password)
@@ -273,14 +276,14 @@ def handle(name, cfg, cloud, log, _args):
                     base64 = password.split('$')[3]
                     base_64_len = len(base64)
                     if ((hash.group(1) == '$1$' and base_64_len == 22) or
-                        (hash.group(1) == '$5$' and base_64_len == 43) or
-                        (hash.group(1) == '$6$' and base_64_len == 86)):
+                            (hash.group(1) == '$5$' and base_64_len == 43) or
+                            (hash.group(1) == '$6$' and base_64_len == 86)):
                         encrypted_pass = True
                 set_pass_login(config, user, password, encrypted_pass)
 
             vyos_keys = cloud.get_public_ssh_keys() or []
-            if 'ssh_authorized_keys' in cfg:
-                cfgkeys = cfg['ssh_authorized_keys']
+            if 'ssh_authorized_keys' in user_cfg:
+                cfgkeys = user_cfg['ssh_authorized_keys']
                 vyos_keys.extend(cfgkeys)
 
             for ssh_key in vyos_keys:
