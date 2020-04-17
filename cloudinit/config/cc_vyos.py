@@ -22,8 +22,6 @@
 
 import os
 import re
-import sys
-import ast
 import subprocess
 
 from ipaddress import IPv4Network
@@ -32,10 +30,16 @@ from cloudinit import util
 
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
+from cloudinit import log as logging
 
 from vyos.configtree import ConfigTree
 
+# configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
 frequency = PER_INSTANCE
+
 
 class VyosError(Exception):
     """Raised when the distro runs into an exception when setting vyos config.
@@ -43,6 +47,8 @@ class VyosError(Exception):
     """
     pass
 
+
+# configure user account with password
 def set_pass_login(config, user, password, encrypted_pass):
     if encrypted_pass:
         config.set(['system', 'login', 'user', user, 'authentication', 'encrypted-password'], value=password, replace=True)
@@ -53,13 +59,14 @@ def set_pass_login(config, user, password, encrypted_pass):
     config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)
 
 
-def set_ssh_login(config, log, user, key_string, key_x):
+# configure user account with ssh key
+def set_ssh_login(config, user, key_string, key_x):
     key_type = None
     key_data = None
     key_name = None
 
-    if key_string  == '':
-        log.debug("No keys found.")
+    if key_string == '':
+        logger.error("No keys found.")
         return
 
     key_parts = key_string.split(None)
@@ -69,14 +76,14 @@ def set_ssh_login(config, log, user, key_string, key_x):
             key_type = key
 
         if key.startswith('AAAAB3NzaC1yc2E') or key.startswith('AAAAB3NzaC1kc3M'):
-           key_data = key
+            key_data = key
 
     if not key_type:
-        util.logexc(log, 'Key type not defined, wrong ssh key format.')
+        logger.error("Key type not defined, wrong ssh key format.")
         return
 
     if not key_data:
-        util.logexc(log, 'Key base64 not defined, wrong ssh key format.')
+        logger.error("Key base64 not defined, wrong ssh key format.")
         return
 
     if len(key_parts) > 2:
@@ -87,15 +94,32 @@ def set_ssh_login(config, log, user, key_string, key_x):
     else:
         key_name = "cloud-init-%s" % key_x
 
-    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name , 'key'], value=key_data, replace=True)
-    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name , 'type'], value=key_type, replace=True)
+    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'key'], value=key_data, replace=True)
+    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'type'], value=key_type, replace=True)
     config.set_tag(['system', 'login', 'user'])
     config.set_tag(['system', 'login', 'user', user, 'authentication', 'public-keys'])
-    config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)  
+    config.set(['system', 'login', 'user', user, 'level'], value='admin', replace=True)
 
 
+# filter hostname to be sure that it can be applied
+# NOTE: here we cannot attempt to deny anything prohibited, as it is too late.
+# Therefore, we need only pass what is allowed, cutting everything else
+def hostname_filter(hostname):
+    # define regex for alloweed characters and resulted hostname
+    regex_characters = re.compile(r'[a-z0-9.-]', re.IGNORECASE)
+    regex_hostname = re.compile(r'[a-z0-9](([a-z0-9-]\.|[a-z0-9-])*[a-z0-9])?', re.IGNORECASE)
+    # filter characters
+    filtered_characters = ''.join(regex_characters.findall(hostname))
+    # check that hostname start and end by allowed characters and cut unsupported ones, limit to 64 characters total
+    filtered_hostname = regex_hostname.search(filtered_characters).group()[:64]
+
+    # return safe to apply host-name value
+    return filtered_hostname
+
+
+# configure system parameters from OVF template
 def set_config_ovf(config, hostname, metadata):
-    ip_0 = metadata['ip0'] 
+    ip_0 = metadata['ip0']
     mask_0 = metadata['netmask0']
     gateway = metadata['gateway']
     DNS = list(metadata['DNS'].replace(' ', '').split(','))
@@ -104,8 +128,8 @@ def set_config_ovf(config, hostname, metadata):
     APIPORT = metadata['APIPORT']
     APIDEBUG = metadata['APIDEBUG']
 
-    if ip_0 and ip_0 != 'null' and mask_0 and mask_0 != 'null' and gateway and gateway != 'null': 
-        cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen) 
+    if ip_0 and ip_0 != 'null' and mask_0 and mask_0 != 'null' and gateway and gateway != 'null':
+        cidr = str(IPv4Network('0.0.0.0/' + mask_0).prefixlen)
         ipcidr = ip_0 + '/' + cidr
 
         config.set(['interfaces', 'ethernet', 'eth0', 'address'], value=ipcidr, replace=True)
@@ -141,17 +165,18 @@ def set_config_ovf(config, hostname, metadata):
 
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
-    
+
     if hostname and hostname != 'null':
-        config.set(['system', 'host-name'], value=hostname, replace=True)
+        config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
     else:
         config.set(['system', 'host-name'], value='vyos', replace=True)
 
 
+# configure interface
 def set_config_interfaces(config, interface):
     for item in interface['subnets']:
         if item['type'] == 'static':
-            if 'address' in item and runcommand("/usr/bin/ipaddrcheck --is-ipv4 " +  item['address']) == 0:
+            if 'address' in item and runcommand("/usr/bin/ipaddrcheck --is-ipv4 " + item['address']) == 0:
                 cidr = str(IPv4Network('0.0.0.0/' + item['netmask']).prefixlen)
                 ipcidr = item['address'] + '/' + cidr
                 config.set(['interfaces', 'ethernet', interface['name'], 'address'], value=ipcidr, replace=True)
@@ -161,7 +186,7 @@ def set_config_interfaces(config, interface):
                     config.set_tag(['protocols', 'static', 'route'])
                     config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
 
-            if 'address' in item and runcommand("/usr/bin/ipaddrcheck --is-ipv6 " +  item['address']) == 0:
+            if 'address' in item and runcommand("/usr/bin/ipaddrcheck --is-ipv6 " + item['address']) == 0:
                 config.set(['interfaces', 'ethernet', interface['name'], 'address'], value=item['address'], replace=False)
                 config.set_tag(['interfaces', 'ethernet'])
                 if item['gateway']:
@@ -173,41 +198,46 @@ def set_config_interfaces(config, interface):
             config.set_tag(['interfaces', 'ethernet'])
 
 
-def set_config_nameserver(config, log, interface):
+# configure nameservers
+def set_config_nameserver(config, interface):
     if 'address' in interface:
         for server in interface['address']:
             config.set(['system', 'name-server'], value=server, replace=False)
     else:
-        log.debug("No name-servers found.")
-    if 'search' in interface: 
+        logger.debug("No name-servers found.")
+    if 'search' in interface:
         for server in interface['search']:
             config.set(['system', 'domain-search'], value=server, replace=False)
     else:
-        log.debug("No search-domains found.")
+        logger.debug("No search-domains found.")
 
 
+# configure DHCP client for interface
 def set_config_dhcp(config):
     config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
     config.set_tag(['interfaces', 'ethernet'])
 
 
+# configure SSH server service
 def set_config_ssh(config):
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
     config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
 
 
+# configure hostname
 def set_config_hostname(config, hostname):
-    config.set(['system', 'host-name'], value=hostname, replace=True)
+    config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
 
 
+# configure SSH, eth0 interface and hostname
 def set_config_cloud(config, hostname):
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
     config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
     config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
     config.set_tag(['interfaces', 'ethernet'])
-    config.set(['system', 'host-name'], value=hostname, replace=True)
+    config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
 
 
 def runcommand(cmd):
@@ -220,6 +250,7 @@ def runcommand(cmd):
     return proc.returncode
 
 
+# main config handler
 def handle(name, cfg, cloud, log, _args):
     init = stages.Init()
     dc = init.fetch()
@@ -233,7 +264,7 @@ def handle(name, cfg, cloud, log, _args):
     key_y = 0
 
     # look at data that can be used for configuration
-    #print(dir(dc))
+    # print(dir(dc))
 
     if not os.path.exists(cfg_file_name):
         file_name = bak_file_name
@@ -244,7 +275,7 @@ def handle(name, cfg, cloud, log, _args):
         config_file = f.read()
     config = ConfigTree(config_file)
 
-    if 'Azure' in dc.dsname: 
+    if 'Azure' in dc.dsname:
         encrypted_pass = True
         for key, val in users.items():
             user = key
@@ -256,7 +287,7 @@ def handle(name, cfg, cloud, log, _args):
             vyos_keys = metadata['public-keys']
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, log, user, ssh_key, key_x)
+                set_ssh_login(config, user, ssh_key, key_x)
                 key_x = key_x + 1
     else:
         encrypted_pass = False
@@ -267,14 +298,14 @@ def handle(name, cfg, cloud, log, _args):
                 password = util.get_cfg_option_str(cfg, 'password', None)
 
             if password and password != '':
-                hash = re.match("(^\$.\$)", password)
+                hash = re.match(r"(^\$.\$)", password)
                 hash_count = password.count('$')
                 if hash and hash_count >= 3:
                     base64 = password.split('$')[3]
                     base_64_len = len(base64)
                     if ((hash.group(1) == '$1$' and base_64_len == 22) or
-                        (hash.group(1) == '$5$' and base_64_len == 43) or
-                        (hash.group(1) == '$6$' and base_64_len == 86)):
+                            (hash.group(1) == '$5$' and base_64_len == 43) or
+                            (hash.group(1) == '$6$' and base_64_len == 86)):
                         encrypted_pass = True
                 set_pass_login(config, user, password, encrypted_pass)
 
@@ -284,25 +315,25 @@ def handle(name, cfg, cloud, log, _args):
                 vyos_keys.extend(cfgkeys)
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, log, user, ssh_key, key_x)
+                set_ssh_login(config, user, ssh_key, key_x)
                 key_x = key_x + 1
 
     if 'OVF' in dc.dsname:
         set_config_ovf(config, hostname, metadata)
         key_y = 1
     elif netcfg:
-        for interface in netcfg['config']: 
+        for interface in netcfg['config']:
             if interface['type'] == 'physical':
                 key_y = 1
                 set_config_interfaces(config, interface)
-            
+
             if interface['type'] == 'nameserver':
-                set_config_nameserver(config, log, interface)
+                set_config_nameserver(config, interface)
 
         set_config_ssh(config)
         set_config_hostname(config, hostname)
     else:
-        set_config_dhcp(config) 
+        set_config_dhcp(config)
         set_config_ssh(config)
         set_config_hostname(config, hostname)
 
@@ -313,4 +344,4 @@ def handle(name, cfg, cloud, log, _args):
         with open(cfg_file_name, 'w') as f:
             f.write(config.to_string())
     except Exception as e:
-        util.logexc(log, "Failed to write configs into file %s error %s", file_name, e)
+        logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
