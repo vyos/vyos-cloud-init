@@ -22,15 +22,12 @@
 
 import os
 import re
-
 import ipaddress
 from cloudinit import stages
 from cloudinit import util
-
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
 from cloudinit import log as logging
-
 from vyos.configtree import ConfigTree
 
 # configure logging
@@ -50,15 +47,17 @@ class VyosError(Exception):
 # configure user account with password
 def set_pass_login(config, user, password, encrypted_pass):
     if encrypted_pass:
+        logger.debug("Configuring encrypted password for: {}".format(user))
         config.set(['system', 'login', 'user', user, 'authentication', 'encrypted-password'], value=password, replace=True)
     else:
+        logger.debug("Configuring clear-text password for: {}".format(user))
         config.set(['system', 'login', 'user', user, 'authentication', 'plaintext-password'], value=password, replace=True)
 
     config.set_tag(['system', 'login', 'user'])
 
 
 # configure user account with ssh key
-def set_ssh_login(config, user, key_string, key_x):
+def set_ssh_login(config, user, key_string, ssh_key_number):
     key_type = None
     key_data = None
     key_name = None
@@ -88,10 +87,11 @@ def set_ssh_login(config, user, key_string, key_x):
         if key_parts[2] != key_type or key_parts[2] != key_data:
             key_name = key_parts[2]
         else:
-            key_name = "cloud-init-%s" % key_x
+            key_name = "cloud-init-%s" % ssh_key_number
     else:
-        key_name = "cloud-init-%s" % key_x
+        key_name = "cloud-init-%s" % ssh_key_number
 
+    logger.debug("Configuring SSH {} public key for: {}".format(key_type, user))
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'key'], value=key_data, replace=True)
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'type'], value=key_type, replace=True)
     config.set_tag(['system', 'login', 'user'])
@@ -110,12 +110,16 @@ def hostname_filter(hostname):
     # check that hostname start and end by allowed characters and cut unsupported ones, limit to 64 characters total
     filtered_hostname = regex_hostname.search(filtered_characters).group()[:64]
 
+    if hostname != filtered_hostname:
+        logger.warning("Hostname was filtered: {} -> {}".format(hostname, filtered_hostname))
     # return safe to apply host-name value
     return filtered_hostname
 
 
 # configure system parameters from OVF template
-def set_config_ovf(config, hostname, metadata):
+def set_config_ovf(config, metadata):
+    logger.debug("Applying configuration from an OVF template")
+
     ip_0 = metadata['ip0']
     mask_0 = metadata['netmask0']
     gateway = metadata['gateway']
@@ -160,45 +164,136 @@ def set_config_ovf(config, hostname, metadata):
         config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=APIPORT, replace=True)
         config.set_tag(['service', 'https', 'listen-address'])
 
-    config.set(['service', 'ssh'], replace=True)
-    config.set(['service', 'ssh', 'port'], value='22', replace=True)
 
-    if hostname and hostname != 'null':
-        config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
-    else:
-        config.set(['system', 'host-name'], value='vyos', replace=True)
+# configure interface from networking config version 1
+def set_config_interfaces_v1(config, iface_config):
+    # configure physical interfaces
+    if iface_config['type'] == 'physical':
+        iface_name = iface_config['name']
+        # configre MTU
+        if 'mtu' in iface_config:
+            logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
+            config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
+            config.set_tag(['interfaces', 'ethernet'])
+
+        # configure subnets
+        if 'subnets' in iface_config:
+            # if DHCP is already configured, we should ignore all other addresses, as in VyOS it is impossible to use both on the same interface
+            dhcp4_configured = False
+            dhcp6_configured = False
+            for subnet in iface_config['subnets']:
+                # configure DHCP client
+                if subnet['type'] in ['dhcp', 'dhcp4', 'dhcp6']:
+                    if subnet['type'] == 'dhcp6':
+                        logger.debug("Configuring DHCPv6 for {}".format(iface_name))
+                        config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp6', replace=True)
+                        dhcp6_configured = True
+                    else:
+                        logger.debug("Configuring DHCPv4 for {}".format(iface_name))
+                        config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp', replace=True)
+                        dhcp4_configured = True
+
+                    config.set_tag(['interfaces', 'ethernet'])
+                    continue
+
+                # configure static options
+                if subnet['type'] in ['static', 'static6']:
+                    # configure IP address
+                    try:
+                        ip_interface = ipaddress.ip_interface(subnet['address'])
+                        ip_version = ip_interface.version
+                        ip_address = ip_interface.ip.compressed
+                        ip_static_addr = ''
+                        # format IPv4
+                        if ip_version == 4 and ip_address != '0.0.0.0' and dhcp4_configured is not True:
+                            if '/' in subnet['address']:
+                                ip_static_addr = ip_interface.compressed
+                            else:
+                                ip_static_addr = ipaddress.IPv4Interface('{}/{}'.format(ip_address, subnet['netmask'])).compressed
+                        # format IPv6
+                        if ip_version == 6 and dhcp6_configured is not True:
+                            ip_static_addr = ip_interface.compressed
+                        # apply to the configuration
+                        if ip_static_addr:
+                            logger.debug("Configuring static IP address for {}: {}".format(iface_name, ip_static_addr))
+                            config.set(['interfaces', 'ethernet', iface_name, 'address'], value=ip_static_addr, replace=True)
+                            config.set_tag(['interfaces', 'ethernet'])
+                    except Exception as err:
+                        logger.error("Impossible to configure static IP address: {}".format(err))
+
+                    # configure gateway
+                    if 'gateway' in subnet and subnet['gateway'] != '0.0.0.0':
+                        logger.debug("Configuring gateway for {}: {}".format(iface_name, subnet['gateway']))
+                        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=subnet['gateway'], replace=True)
+                        config.set_tag(['protocols', 'static', 'route'])
+                        config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
+
+                    # configure routes
+                    if 'routes' in subnet:
+                        for item in subnet['routes']:
+                            try:
+                                ip_network = ipaddress.ip_network('{}/{}'.format(item['network'], item['netmask']))
+                                if ip_network.version == 4:
+                                    logger.debug("Configuring IPv4 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
+                                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
+                                    config.set_tag(['protocols', 'static', 'route'])
+                                    config.set_tag(['protocols', 'static', 'route', item['to'], 'next-hop'])
+                                if ip_network.version == 6:
+                                    logger.debug("Configuring IPv6 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
+                                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
+                                    config.set_tag(['protocols', 'static', 'route6'])
+                                    config.set_tag(['protocols', 'static', 'route6', item['to'], 'next-hop'])
+                            except Exception as err:
+                                logger.error("Impossible to detect IP protocol version: {}".format(err))
+
+                    # configure nameservers
+                    if 'dns_nameservers' in subnet:
+                        for item in subnet['dns_nameservers']:
+                            logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
+                            config.set(['system', 'name-server'], value=item, replace=False)
+
+                    if 'dns_search' in subnet:
+                        for item in subnet['dns_search']:
+                            logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
+                            config.set(['system', 'domain-search'], value=item, replace=False)
 
 
-# configure interface
-def set_config_interfaces(config, iface_name, iface_config):
+# configure interface from networking config version 2
+def set_config_interfaces_v2(config, iface_name, iface_config):
     # configure DHCP client
     if 'dhcp4' in iface_config:
         if iface_config['dhcp4'] is True:
+            logger.debug("Configuring DHCPv4 for {}".format(iface_name))
             config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp', replace=True)
             config.set_tag(['interfaces', 'ethernet'])
     if 'dhcp6' in iface_config:
         if iface_config['dhcp6'] is True:
+            logger.debug("Configuring DHCPv6 for {}".format(iface_name))
             config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp6', replace=True)
             config.set_tag(['interfaces', 'ethernet'])
 
     # configure static addresses
     if 'addresses' in iface_config:
         for item in iface_config['addresses']:
+            logger.debug("Configuring static IP address for {}: {}".format(iface_name, item))
             config.set(['interfaces', 'ethernet', iface_name, 'address'], value=item, replace=True)
             config.set_tag(['interfaces', 'ethernet'])
 
     # configure gateways
     if 'gateway4' in iface_config:
-        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=item, replace=True)
+        logger.debug("Configuring IPv4 gateway for {}: {}".format(iface_name, iface_config['gateway4']))
+        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=iface_config['gateway4'], replace=True)
         config.set_tag(['protocols', 'static', 'route'])
         config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
     if 'gateway6' in iface_config:
-        config.set(['protocols', 'static', 'route6', '::/0', 'next-hop'], value=item, replace=True)
+        logger.debug("Configuring IPv6 gateway for {}: {}".format(iface_name, iface_config['gateway6']))
+        config.set(['protocols', 'static', 'route6', '::/0', 'next-hop'], value=iface_config['gateway6'], replace=True)
         config.set_tag(['protocols', 'static', 'route6'])
         config.set_tag(['protocols', 'static', 'route6', '::/0', 'next-hop'])
 
     # configre MTU
     if 'mtu' in iface_config:
+        logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
         config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
         config.set_tag(['interfaces', 'ethernet'])
 
@@ -207,10 +302,12 @@ def set_config_interfaces(config, iface_name, iface_config):
         for item in iface_config['routes']:
             try:
                 if ipaddress.ip_network(item['to']).version == 4:
+                    logger.debug("Configuring IPv4 route on {}: {} via {}".format(iface_name, item['to'], item['via']))
                     config.set(['protocols', 'static', 'route', item['to'], 'next-hop'], value=item['via'], replace=True)
                     config.set_tag(['protocols', 'static', 'route'])
                     config.set_tag(['protocols', 'static', 'route', item['to'], 'next-hop'])
                 if ipaddress.ip_network(item['to']).version == 6:
+                    logger.debug("Configuring IPv6 route on {}: {} via {}".format(iface_name, item['to'], item['via']))
                     config.set(['protocols', 'static', 'route6', item['to'], 'next-hop'], value=item['via'], replace=True)
                     config.set_tag(['protocols', 'static', 'route6'])
                     config.set_tag(['protocols', 'static', 'route6', item['to'], 'next-hop'])
@@ -221,20 +318,24 @@ def set_config_interfaces(config, iface_name, iface_config):
     if 'nameservers' in iface_config:
         if 'search' in iface_config['nameservers']:
             for item in iface_config['nameservers']['search']:
+                logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
                 config.set(['system', 'domain-search'], value=item, replace=False)
         if 'addresses' in iface_config['nameservers']:
             for item in iface_config['nameservers']['addresses']:
+                logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
                 config.set(['system', 'name-server'], value=item, replace=False)
 
 
-# configure DHCP client for interface
+# configure DHCP client for eth0 interface (fallback)
 def set_config_dhcp(config):
+    logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
     config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
     config.set_tag(['interfaces', 'ethernet'])
 
 
 # configure SSH server service
 def set_config_ssh(config):
+    logger.debug("Configuring SSH service")
     config.set(['service', 'ssh'], replace=True)
     config.set(['service', 'ssh', 'port'], value='22', replace=True)
     config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
@@ -242,16 +343,7 @@ def set_config_ssh(config):
 
 # configure hostname
 def set_config_hostname(config, hostname):
-    config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
-
-
-# configure SSH, eth0 interface and hostname
-def set_config_cloud(config, hostname):
-    config.set(['service', 'ssh'], replace=True)
-    config.set(['service', 'ssh', 'port'], value='22', replace=True)
-    config.set(['service', 'ssh', 'client-keepalive-interval'], value='180', replace=True)
-    config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
-    config.set_tag(['interfaces', 'ethernet'])
+    logger.debug("Configuring hostname to: {}".format(hostname))
     config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
 
 
@@ -264,23 +356,24 @@ def handle(name, cfg, cloud, log, _args):
     metadata = cloud.datasource.metadata
     (netcfg, _) = init._find_networking_config()
     (users, _) = ug_util.normalize_users_groups(cfg, cloud.distro)
-    (hostname, _) = util.get_hostname_fqdn(cfg, cloud)
-    key_x = 1
-    key_y = 0
+    (hostname, fqdn) = util.get_hostname_fqdn(cfg, cloud, metadata_only=True)
+    ssh_key_number = 1
+    network_configured = False
 
-    # look at data that can be used for configuration
-    # print(dir(dc))
-
+    # open configuration file
     if not os.path.exists(cfg_file_name):
         file_name = bak_file_name
     else:
         file_name = cfg_file_name
 
+    logger.debug("Using configuration file: {}".format(file_name))
     with open(file_name, 'r') as f:
         config_file = f.read()
     config = ConfigTree(config_file)
 
+    # configure system logins
     if 'Azure' in dc.dsname:
+        logger.debug("Detected Azure environment")
         encrypted_pass = True
         for key, val in users.items():
             user = key
@@ -292,8 +385,8 @@ def handle(name, cfg, cloud, log, _args):
             vyos_keys = metadata['public-keys']
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, key_x)
-                key_x = key_x + 1
+                set_ssh_login(config, user, ssh_key, ssh_key_number)
+                ssh_key_number = ssh_key_number + 1
     else:
         encrypted_pass = False
         for user in users:
@@ -320,30 +413,50 @@ def handle(name, cfg, cloud, log, _args):
                 vyos_keys.extend(cfgkeys)
 
             for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, key_x)
-                key_x = key_x + 1
+                set_ssh_login(config, user, ssh_key, ssh_key_number)
+                ssh_key_number = ssh_key_number + 1
 
+    # apply settings from OVF template
     if 'OVF' in dc.dsname:
-        set_config_ovf(config, hostname, metadata)
-        key_y = 1
-    elif netcfg:
-        if 'ethernets' in netcfg:
-            key_y = 1
-            for interface_name, interface_config in netcfg['ethernets'].items():
-                set_config_interfaces(config, interface_name, interface_config)
+        set_config_ovf(config, metadata)
+        if hostname and hostname == 'null':
+            hostname = 'vyos'
+        network_configured = True
 
-        set_config_ssh(config)
+    # process networking configuration data
+    if netcfg and network_configured is False:
+        # check which one version of config we have
+        # version 1
+        if netcfg['version'] == 1:
+            for interface_config in netcfg['config']:
+                set_config_interfaces_v1(config, interface_config)
+            network_configured = True
+
+        # version 2
+        if netcfg['version'] == 2:
+            if 'ethernets' in netcfg:
+                for interface_name, interface_config in netcfg['ethernets'].items():
+                    set_config_interfaces_v2(config, interface_name, interface_config)
+                network_configured = True
+
+    # enable DHCPv4 on eth0 if network still not configured
+    if network_configured is False:
+        set_config_dhcp(config)
+
+    # enable SSH service
+    set_config_ssh(config)
+    # configure hostname
+    if fqdn:
+        set_config_hostname(config, fqdn)
+    elif hostname:
         set_config_hostname(config, hostname)
     else:
-        set_config_dhcp(config)
-        set_config_ssh(config)
-        set_config_hostname(config, hostname)
+        set_config_hostname(config, 'vyos')
 
-    if key_y == 0:
-        set_config_dhcp(config)
-
+    # save a new configuration file
     try:
         with open(cfg_file_name, 'w') as f:
             f.write(config.to_string())
+            logger.debug("Configuration file saved: {}".format(cfg_file_name))
     except Exception as e:
         logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
