@@ -133,13 +133,13 @@ def set_config_ovf(config, metadata):
         cidr = str(ipaddress.IPv4Network('0.0.0.0/' + mask_0).prefixlen)
         ipcidr = ip_0 + '/' + cidr
 
-        config.set(['interfaces', 'ethernet', 'eth0', 'address'], value=ipcidr, replace=True)
+        set_ipaddress(config, 'eth0', ipcidr)
         config.set_tag(['interfaces', 'ethernet'])
         config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=gateway, replace=True)
         config.set_tag(['protocols', 'static', 'route'])
         config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
     else:
-        config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
+        set_ipaddress(config, 'eth0', 'dhcp')
         config.set_tag(['interfaces', 'ethernet'])
 
     DNS = [server for server in DNS if server and server != 'null']
@@ -165,8 +165,58 @@ def set_config_ovf(config, metadata):
         config.set_tag(['service', 'https', 'listen-address'])
 
 
+# get an IP address type
+def get_ip_type(address):
+    addr_type = None
+    if address in ['dhcp', 'dhcpv6']:
+        addr_type = address
+    else:
+        try:
+            ip_version = ipaddress.ip_interface(address).version
+            if ip_version == 4:
+                addr_type = 'ipv4'
+            if ip_version == 6:
+                addr_type = 'ipv6'
+        except Exception as err:
+            logger.error("Unable to detect IP address type: {}".format(err))
+    logger.debug("IP address {} have type: {}".format(address, addr_type))
+    return addr_type
+
+
+# configure IP address for interface
+def set_ipaddress(config, iface, address):
+    # detect an IP address type
+    addr_type = get_ip_type(address)
+    if not addr_type:
+        logger.error("Unable to configure the IP address: {}".format(address))
+        return
+
+    # check a current configuration of an interface
+    if config.exists(['interfaces', 'ethernet', iface, 'address']):
+        current_addresses = config.return_values(['interfaces', 'ethernet', iface, 'address'])
+        logger.debug("IP address for interface {} already configured: {}".format(iface, current_addresses))
+        # check if currently configured addresses can be used with new one
+        incompatible_addresses = []
+        for current_address in current_addresses:
+            # dhcp cannot be used with static IP address at the same time
+            if ((addr_type == 'dhcp' and get_ip_type(current_address) == 'ipv4') or
+                    (addr_type == 'ipv4' and get_ip_type(current_address) == 'dhcp') or
+                    (addr_type == 'dhcpv6' and get_ip_type(current_address) == 'ipv6') or
+                    (addr_type == 'ipv6' and get_ip_type(current_address) == 'dhcpv6')):
+                incompatible_addresses.append(current_address)
+        # inform about error and skip configuration
+        if incompatible_addresses:
+            logger.error("IP address {} cannot be configured, because it conflicts with already exists: {}".format(address, incompatible_addresses))
+            return
+
+    # configure address
+    logger.debug("Configuring IP address {} on interface {}".format(address, iface))
+    config.set(['interfaces', 'ethernet', iface, 'address'], value=address, replace=False)
+
+
 # configure interface from networking config version 1
 def set_config_interfaces_v1(config, iface_config):
+    logger.debug("Configuring network using Cloud-init networking config version 1")
     # configure physical interfaces
     if iface_config['type'] == 'physical':
         iface_name = iface_config['name']
@@ -178,20 +228,13 @@ def set_config_interfaces_v1(config, iface_config):
 
         # configure subnets
         if 'subnets' in iface_config:
-            # if DHCP is already configured, we should ignore all other addresses, as in VyOS it is impossible to use both on the same interface
-            dhcp4_configured = False
-            dhcp6_configured = False
             for subnet in iface_config['subnets']:
                 # configure DHCP client
                 if subnet['type'] in ['dhcp', 'dhcp4', 'dhcp6']:
                     if subnet['type'] == 'dhcp6':
-                        logger.debug("Configuring DHCPv6 for {}".format(iface_name))
-                        config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp6', replace=True)
-                        dhcp6_configured = True
+                        set_ipaddress(config, iface_name, 'dhcpv6')
                     else:
-                        logger.debug("Configuring DHCPv4 for {}".format(iface_name))
-                        config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp', replace=True)
-                        dhcp4_configured = True
+                        set_ipaddress(config, iface_name, 'dhcp')
 
                     config.set_tag(['interfaces', 'ethernet'])
                     continue
@@ -205,18 +248,17 @@ def set_config_interfaces_v1(config, iface_config):
                         ip_address = ip_interface.ip.compressed
                         ip_static_addr = ''
                         # format IPv4
-                        if ip_version == 4 and ip_address != '0.0.0.0' and dhcp4_configured is not True:
+                        if ip_version == 4 and ip_address != '0.0.0.0':
                             if '/' in subnet['address']:
                                 ip_static_addr = ip_interface.compressed
                             else:
                                 ip_static_addr = ipaddress.IPv4Interface('{}/{}'.format(ip_address, subnet['netmask'])).compressed
                         # format IPv6
-                        if ip_version == 6 and dhcp6_configured is not True:
+                        if ip_version == 6:
                             ip_static_addr = ip_interface.compressed
                         # apply to the configuration
                         if ip_static_addr:
-                            logger.debug("Configuring static IP address for {}: {}".format(iface_name, ip_static_addr))
-                            config.set(['interfaces', 'ethernet', iface_name, 'address'], value=ip_static_addr, replace=True)
+                            set_ipaddress(config, iface_name, ip_static_addr)
                             config.set_tag(['interfaces', 'ethernet'])
                     except Exception as err:
                         logger.error("Impossible to configure static IP address: {}".format(err))
@@ -237,12 +279,12 @@ def set_config_interfaces_v1(config, iface_config):
                                     logger.debug("Configuring IPv4 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
                                     config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
                                     config.set_tag(['protocols', 'static', 'route'])
-                                    config.set_tag(['protocols', 'static', 'route', item['to'], 'next-hop'])
+                                    config.set_tag(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'])
                                 if ip_network.version == 6:
                                     logger.debug("Configuring IPv6 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
                                     config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
                                     config.set_tag(['protocols', 'static', 'route6'])
-                                    config.set_tag(['protocols', 'static', 'route6', item['to'], 'next-hop'])
+                                    config.set_tag(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'])
                             except Exception as err:
                                 logger.error("Impossible to detect IP protocol version: {}".format(err))
 
@@ -257,26 +299,56 @@ def set_config_interfaces_v1(config, iface_config):
                             logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
                             config.set(['system', 'domain-search'], value=item, replace=False)
 
+    # configure nameservers
+    if iface_config['type'] == 'nameserver':
+        for item in iface_config['address']:
+            logger.debug("Configuring DNS nameserver: {}".format(item))
+            config.set(['system', 'name-server'], value=item, replace=False)
+
+        if 'search' in iface_config:
+            for item in iface_config['search']:
+                logger.debug("Configuring DNS search domain: {}".format(item))
+                config.set(['system', 'domain-search'], value=item, replace=False)
+
+    # configure routes
+    if iface_config['type'] == 'route':
+        try:
+            ip_network = ipaddress.ip_network(iface_config['destination'])
+            if ip_network.version == 4:
+                logger.debug("Configuring IPv4 route: {} via {}".format(ip_network.compressed, iface_config['gateway']))
+                config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'], value=iface_config['gateway'], replace=True)
+                config.set_tag(['protocols', 'static', 'route'])
+                config.set_tag(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'])
+                if 'metric' in iface_config:
+                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop', iface_config['gateway'], distance], value=iface_config['metric'], replace=True)
+            if ip_network.version == 6:
+                logger.debug("Configuring IPv6 route: {} via {}".format(ip_network.compressed, iface_config['gateway']))
+                config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=iface_config['gateway'], replace=True)
+                config.set_tag(['protocols', 'static', 'route6'])
+                config.set_tag(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'])
+                if 'metric' in iface_config:
+                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop', iface_config['gateway'], distance], value=iface_config['metric'], replace=True)
+        except Exception as err:
+            logger.error("Impossible to detect IP protocol version: {}".format(err))
+
 
 # configure interface from networking config version 2
 def set_config_interfaces_v2(config, iface_name, iface_config):
+    logger.debug("Configuring network using Cloud-init networking config version 2")
     # configure DHCP client
     if 'dhcp4' in iface_config:
         if iface_config['dhcp4'] is True:
-            logger.debug("Configuring DHCPv4 for {}".format(iface_name))
-            config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp', replace=True)
+            set_ipaddress(config, iface_name, 'dhcp')
             config.set_tag(['interfaces', 'ethernet'])
     if 'dhcp6' in iface_config:
         if iface_config['dhcp6'] is True:
-            logger.debug("Configuring DHCPv6 for {}".format(iface_name))
-            config.set(['interfaces', 'ethernet', iface_name, 'address'], value='dhcp6', replace=True)
+            set_ipaddress(config, iface_name, 'dhcpv6')
             config.set_tag(['interfaces', 'ethernet'])
 
     # configure static addresses
     if 'addresses' in iface_config:
         for item in iface_config['addresses']:
-            logger.debug("Configuring static IP address for {}: {}".format(iface_name, item))
-            config.set(['interfaces', 'ethernet', iface_name, 'address'], value=item, replace=True)
+            set_ipaddress(config, iface_name, item)
             config.set_tag(['interfaces', 'ethernet'])
 
     # configure gateways
@@ -329,7 +401,7 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
 # configure DHCP client for eth0 interface (fallback)
 def set_config_dhcp(config):
     logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
-    config.set(['interfaces', 'ethernet', 'eth0', 'address'], value='dhcp', replace=True)
+    set_ipaddress(config, 'eth0', 'dhcp')
     config.set_tag(['interfaces', 'ethernet'])
 
 
