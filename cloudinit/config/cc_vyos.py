@@ -20,14 +20,14 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
 import re
 import ipaddress
-from cloudinit import stages
-from cloudinit import util
+from os import path
+from uuid import uuid4
+from cloudinit import log as logging
+from cloudinit.ssh_util import AuthKeyLineParser
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
-from cloudinit import log as logging
 from vyos.configtree import ConfigTree
 
 # configure logging
@@ -45,57 +45,44 @@ class VyosError(Exception):
 
 
 # configure user account with password
-def set_pass_login(config, user, password, encrypted_pass):
+def set_pass_login(config, user, password):
+    # check if a password string is a hash or a plaintext password
+    # the regex from Cloud-init documentation, so we should trust it for this purpose
+    encrypted_pass = re.match(r'\$(1|2a|2y|5|6)(\$.+){2}', password)
     if encrypted_pass:
         logger.debug("Configuring encrypted password for: {}".format(user))
         config.set(['system', 'login', 'user', user, 'authentication', 'encrypted-password'], value=password, replace=True)
     else:
-        logger.debug("Configuring clear-text password for: {}".format(user))
+        logger.debug("Configuring plaintext password password for: {}".format(user))
         config.set(['system', 'login', 'user', user, 'authentication', 'plaintext-password'], value=password, replace=True)
 
     config.set_tag(['system', 'login', 'user'])
 
 
 # configure user account with ssh key
-def set_ssh_login(config, user, key_string, ssh_key_number):
-    key_type = None
-    key_data = None
-    key_name = None
+def set_ssh_login(config, user, key_string):
+    ssh_parser = AuthKeyLineParser()
+    key_parsed = ssh_parser.parse(key_string)
+    logger.debug("Parsed SSH public key: type: {}, base64: \"{}\", comment: {}, options: {}".format(key_parsed.keytype, key_parsed.base64, key_parsed.comment, key_parsed.options))
 
-    if key_string == '':
-        logger.error("No keys found.")
+    if key_parsed.keytype not in ['ssh-dss', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ssh-ed25519', 'ecdsa-sha2-nistp521']:
+        logger.error("Key type {} not supported.".format(key_parsed.keytype))
         return
 
-    key_parts = key_string.split(None)
-
-    for key in key_parts:
-        if 'ssh-dss' in key or 'ssh-rsa' in key:
-            key_type = key
-
-        if key.startswith('AAAAB3NzaC1yc2E') or key.startswith('AAAAB3NzaC1kc3M'):
-            key_data = key
-
-    if not key_type:
-        logger.error("Key type not defined, wrong ssh key format.")
-        return
-
-    if not key_data:
+    if not key_parsed.base64:
         logger.error("Key base64 not defined, wrong ssh key format.")
         return
 
-    if len(key_parts) > 2:
-        if key_parts[2] != key_type or key_parts[2] != key_data:
-            key_name = key_parts[2]
-        else:
-            key_name = "cloud-init-%s" % ssh_key_number
-    else:
-        key_name = "cloud-init-%s" % ssh_key_number
+    if not key_parsed.comment:
+        key_parsed.comment = "cloud-init-{}".format(uuid4())
 
-    logger.debug("Configuring SSH {} public key for: {}".format(key_type, user))
-    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'key'], value=key_data, replace=True)
-    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_name, 'type'], value=key_type, replace=True)
+    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'key'], value=key_parsed.base64, replace=True)
+    config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'type'], value=key_parsed.keytype, replace=True)
+    if key_parsed.options:
+        config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'options'], value=key_parsed.options, replace=True)
     config.set_tag(['system', 'login', 'user'])
     config.set_tag(['system', 'login', 'user', user, 'authentication', 'public-keys'])
+    logger.debug("Configured SSH public key for user: {}".format(user))
 
 
 # filter hostname to be sure that it can be applied
@@ -320,14 +307,14 @@ def set_config_interfaces_v1(config, iface_config):
                 config.set_tag(['protocols', 'static', 'route'])
                 config.set_tag(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'])
                 if 'metric' in iface_config:
-                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop', iface_config['gateway'], distance], value=iface_config['metric'], replace=True)
+                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop', iface_config['gateway'], 'distance'], value=iface_config['metric'], replace=True)
             if ip_network.version == 6:
                 logger.debug("Configuring IPv6 route: {} via {}".format(ip_network.compressed, iface_config['gateway']))
                 config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=iface_config['gateway'], replace=True)
                 config.set_tag(['protocols', 'static', 'route6'])
                 config.set_tag(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'])
                 if 'metric' in iface_config:
-                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop', iface_config['gateway'], distance], value=iface_config['metric'], replace=True)
+                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop', iface_config['gateway'], 'distance'], value=iface_config['metric'], replace=True)
         except Exception as err:
             logger.error("Impossible to detect IP protocol version: {}".format(err))
 
@@ -421,19 +408,41 @@ def set_config_hostname(config, hostname):
 
 # main config handler
 def handle(name, cfg, cloud, log, _args):
-    init = stages.Init()
-    dc = init.fetch()
+    logger.debug("Cloud-init config: {}".format(cfg))
+    # fetch all required data from Cloud-init
+    # Datasource name
+    dsname = cloud.datasource.dsname
+    logger.debug("Datasource: {}".format(dsname))
+    # Metadata (datasource specific)
+    metadata_ds = cloud.datasource.metadata
+    logger.debug("Meta-Data ds: {}".format(metadata_ds))
+    # Metadata in stable v1 format (the same structure for all datasources)
+    metadata_v1 = cloud.datasource._get_standardized_metadata().get('v1')
+    logger.debug("Meta-Data v1: {}".format(metadata_v1))
+    # User-Data
+    userdata = cloud.datasource.userdata
+    logger.debug("User-Data: {}".format(userdata))
+    # Vendor-Data
+    vendordata = cloud.datasource.vendordata
+    logger.debug("Vendor-Data: {}".format(vendordata))
+    # Network-config
+    netcfg = cloud.datasource.network_config
+    logger.debug("Network-config: {}".format(netcfg))
+    # Hostname with domain (if exist)
+    hostname = cloud.get_hostname(fqdn=True, metadata_only=True)
+    logger.debug("Hostname: {}".format(hostname))
+    # Get users list
+    (users, _) = ug_util.normalize_users_groups(cfg, cloud.distro)
+    logger.debug("Users: {}".format(users))
+    (default_user, default_user_config) = ug_util.extract_default(users)
+    logger.debug("Default user: {}".format(default_user))
+
+    # VyOS configuration file selection
     cfg_file_name = '/opt/vyatta/etc/config/config.boot'
     bak_file_name = '/opt/vyatta/etc/config.boot.default'
-    metadata = cloud.datasource.metadata
-    (netcfg, _) = init._find_networking_config()
-    (users, _) = ug_util.normalize_users_groups(cfg, cloud.distro)
-    (hostname, fqdn) = util.get_hostname_fqdn(cfg, cloud, metadata_only=True)
-    ssh_key_number = 1
-    network_configured = False
 
     # open configuration file
-    if not os.path.exists(cfg_file_name):
+    if not path.exists(cfg_file_name):
         file_name = bak_file_name
     else:
         file_name = cfg_file_name
@@ -443,56 +452,42 @@ def handle(name, cfg, cloud, log, _args):
         config_file = f.read()
     config = ConfigTree(config_file)
 
+    # Initialization of variables
+    network_configured = False
+
     # configure system logins
-    if 'Azure' in dc.dsname:
-        logger.debug("Detected Azure environment")
-        encrypted_pass = True
-        for key, val in users.items():
-            user = key
+    # Prepare SSH public keys for default user, to be sure that global keys applied to the default account (if it exist)
+    ssh_keys = metadata_v1['public_ssh_keys']
+    # append SSH keys from cloud-config
+    ssh_keys.extend(cfg.get('ssh_authorized_keys', []))
+    # Configure authentication for default user account
+    if default_user:
+        # key-based
+        for ssh_key in ssh_keys:
+            set_ssh_login(config, default_user, ssh_key)
+        # password-based
+        password = cfg.get('password')
+        if password:
+            set_pass_login(config, default_user, password)
 
-            if 'passwd' in val:
-                password = val.get('passwd')
-                set_pass_login(config, user, password, encrypted_pass)
+    # Configure all users accounts
+    for user, user_cfg in users.items():
+        # Configure password-based authentication
+        password = user_cfg.get('passwd')
+        if password and password != '':
+            set_pass_login(config, user, password)
 
-            vyos_keys = metadata['public-keys']
-
-            for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, ssh_key_number)
-                ssh_key_number = ssh_key_number + 1
-    else:
-        encrypted_pass = False
-        for user in users:
-            password = util.get_cfg_option_str(cfg, 'passwd', None)
-
-            if not password:
-                password = util.get_cfg_option_str(cfg, 'password', None)
-
-            if password and password != '':
-                hash = re.match(r"(^\$.\$)", password)
-                hash_count = password.count('$')
-                if hash and hash_count >= 3:
-                    base64 = password.split('$')[3]
-                    base_64_len = len(base64)
-                    if ((hash.group(1) == '$1$' and base_64_len == 22) or
-                            (hash.group(1) == '$5$' and base_64_len == 43) or
-                            (hash.group(1) == '$6$' and base_64_len == 86)):
-                        encrypted_pass = True
-                set_pass_login(config, user, password, encrypted_pass)
-
-            vyos_keys = cloud.get_public_ssh_keys() or []
-            if 'ssh_authorized_keys' in cfg:
-                cfgkeys = cfg['ssh_authorized_keys']
-                vyos_keys.extend(cfgkeys)
-
-            for ssh_key in vyos_keys:
-                set_ssh_login(config, user, ssh_key, ssh_key_number)
-                ssh_key_number = ssh_key_number + 1
+        # Configure key-based authentication
+        for ssh_key in user_cfg.get('ssh_authorized_keys', []):
+            set_ssh_login(config, user, ssh_key)
 
     # apply settings from OVF template
-    if 'OVF' in dc.dsname:
-        set_config_ovf(config, metadata)
+    if 'OVF' in dsname:
+        set_config_ovf(config, metadata_ds)
+        # Empty hostname option may be interpreted as 'null' string by some hypervisors
+        # we need to replace it to the empty value to process it later properly
         if hostname and hostname == 'null':
-            hostname = 'vyos'
+            hostname = None
         network_configured = True
 
     # process networking configuration data
@@ -518,9 +513,7 @@ def handle(name, cfg, cloud, log, _args):
     # enable SSH service
     set_config_ssh(config)
     # configure hostname
-    if fqdn:
-        set_config_hostname(config, fqdn)
-    elif hostname:
+    if hostname:
         set_config_hostname(config, hostname)
     else:
         set_config_hostname(config, 'vyos')
