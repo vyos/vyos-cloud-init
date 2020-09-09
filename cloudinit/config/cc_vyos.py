@@ -28,6 +28,8 @@ from cloudinit import log as logging
 from cloudinit.ssh_util import AuthKeyLineParser
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
+from cloudinit.sources import INSTANCE_JSON_FILE
+from cloudinit.util import load_file, load_json
 from vyos.configtree import ConfigTree
 
 # configure logging
@@ -417,7 +419,8 @@ def handle(name, cfg, cloud, log, _args):
     metadata_ds = cloud.datasource.metadata
     logger.debug("Meta-Data ds: {}".format(metadata_ds))
     # Metadata in stable v1 format (the same structure for all datasources)
-    metadata_v1 = cloud.datasource._get_standardized_metadata().get('v1')
+    instance_data_json = load_json(load_file("{}/{}".format(cloud.datasource.paths.run_dir, INSTANCE_JSON_FILE)))
+    metadata_v1 = instance_data_json.get('v1')
     logger.debug("Meta-Data v1: {}".format(metadata_v1))
     # User-Data
     userdata = cloud.datasource.userdata
