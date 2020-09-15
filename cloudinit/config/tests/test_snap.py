@@ -92,7 +92,7 @@ class TestAddAssertions(CiTestCase):
         super(TestAddAssertions, self).setUp()
         self.tmp = self.tmp_dir()
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     def test_add_assertions_on_empty_list(self, m_subp):
         """When provided with an empty list, add_assertions does nothing."""
         add_assertions([])
@@ -107,7 +107,7 @@ class TestAddAssertions(CiTestCase):
             "assertion parameter was not a list or dict: I'm Not Valid",
             str(context_manager.exception))
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     def test_add_assertions_adds_assertions_as_list(self, m_subp):
         """When provided with a list, add_assertions adds all assertions."""
         self.assertEqual(
@@ -130,7 +130,7 @@ class TestAddAssertions(CiTestCase):
         self.assertEqual(
             util.load_file(compare_file), util.load_file(assert_file))
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     def test_add_assertions_adds_assertions_as_dict(self, m_subp):
         """When provided with a dict, add_assertions adds all assertions."""
         self.assertEqual(
@@ -168,7 +168,7 @@ class TestRunCommands(CiTestCase):
         super(TestRunCommands, self).setUp()
         self.tmp = self.tmp_dir()
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     def test_run_commands_on_empty_list(self, m_subp):
         """When provided with an empty list, run_commands does nothing."""
         run_commands([])
@@ -310,6 +310,52 @@ class TestSchema(CiTestCase, SchemaTestCaseMixin):
             {'snap': {'commands': {'01': 'also valid'}}}, schema)
         self.assertEqual('', self.logs.getvalue())
 
+    @mock.patch('cloudinit.config.cc_snap.run_commands')
+    def test_schema_when_commands_values_are_invalid_type(self, _):
+        """Warnings when snap:commands values are invalid type (e.g. int)"""
+        validate_cloudconfig_schema(
+            {'snap': {'commands': [123]}}, schema)
+        validate_cloudconfig_schema(
+            {'snap': {'commands': {'01': 123}}}, schema)
+        self.assertEqual(
+            "WARNING: Invalid config:\n"
+            "snap.commands.0: 123 is not valid under any of the given"
+            " schemas\n"
+            "WARNING: Invalid config:\n"
+            "snap.commands.01: 123 is not valid under any of the given"
+            " schemas\n",
+            self.logs.getvalue())
+
+    @mock.patch('cloudinit.config.cc_snap.run_commands')
+    def test_schema_when_commands_list_values_are_invalid_type(self, _):
+        """Warnings when snap:commands list values are wrong type (e.g. int)"""
+        validate_cloudconfig_schema(
+            {'snap': {'commands': [["snap", "install", 123]]}}, schema)
+        validate_cloudconfig_schema(
+            {'snap': {'commands': {'01': ["snap", "install", 123]}}}, schema)
+        self.assertEqual(
+            "WARNING: Invalid config:\n"
+            "snap.commands.0: ['snap', 'install', 123] is not valid under any"
+            " of the given schemas\n",
+            "WARNING: Invalid config:\n"
+            "snap.commands.0: ['snap', 'install', 123] is not valid under any"
+            " of the given schemas\n",
+            self.logs.getvalue())
+
+    @mock.patch('cloudinit.config.cc_snap.run_commands')
+    def test_schema_when_assertions_values_are_invalid_type(self, _):
+        """Warnings when snap:assertions values are invalid type (e.g. int)"""
+        validate_cloudconfig_schema(
+            {'snap': {'assertions': [123]}}, schema)
+        validate_cloudconfig_schema(
+            {'snap': {'assertions': {'01': 123}}}, schema)
+        self.assertEqual(
+            "WARNING: Invalid config:\n"
+            "snap.assertions.0: 123 is not of type 'string'\n"
+            "WARNING: Invalid config:\n"
+            "snap.assertions.01: 123 is not of type 'string'\n",
+            self.logs.getvalue())
+
     @mock.patch('cloudinit.config.cc_snap.add_assertions')
     def test_warn_schema_assertions_is_not_list_or_dict(self, _):
         """Warn when snap:assertions config is not a list or dict."""
@@ -345,7 +391,7 @@ class TestSchema(CiTestCase, SchemaTestCaseMixin):
     def test_duplicates_are_fine_array_array(self):
         """Duplicated commands array/array entries are allowed."""
         self.assertSchemaValid(
-            {'commands': [["echo", "bye"], ["echo" "bye"]]},
+            {'commands': [["echo", "bye"], ["echo", "bye"]]},
             "command entries can be duplicate.")
 
     def test_duplicates_are_fine_array_string(self):
@@ -431,7 +477,7 @@ class TestHandle(CiTestCase):
 
         self.assertEqual('HI\nMOM\n', util.load_file(outfile))
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     def test_handle_adds_assertions(self, m_subp):
         """Any configured snap assertions are provided to add_assertions."""
         assert_file = self.tmp_path('snapd.assertions', dir=self.tmp)
@@ -447,7 +493,7 @@ class TestHandle(CiTestCase):
         self.assertEqual(
             util.load_file(compare_file), util.load_file(assert_file))
 
-    @mock.patch('cloudinit.config.cc_snap.util.subp')
+    @mock.patch('cloudinit.config.cc_snap.subp.subp')
     @skipUnlessJsonSchema()
     def test_handle_validates_schema(self, m_subp):
         """Any provided configuration is runs validate_cloudconfig_schema."""

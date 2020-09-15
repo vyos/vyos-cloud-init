@@ -29,7 +29,10 @@ DMI_PRODUCT_NOVA = 'OpenStack Nova'
 DMI_PRODUCT_COMPUTE = 'OpenStack Compute'
 VALID_DMI_PRODUCT_NAMES = [DMI_PRODUCT_NOVA, DMI_PRODUCT_COMPUTE]
 DMI_ASSET_TAG_OPENTELEKOM = 'OpenTelekomCloud'
-VALID_DMI_ASSET_TAGS = [DMI_ASSET_TAG_OPENTELEKOM]
+# See github.com/sapcc/helm-charts/blob/master/openstack/nova/values.yaml
+# -> compute.defaults.vmware.smbios_asset_tag for this value
+DMI_ASSET_TAG_SAPCCLOUD = 'SAP CCloud VM'
+VALID_DMI_ASSET_TAGS = [DMI_ASSET_TAG_OPENTELEKOM, DMI_ASSET_TAG_SAPCCLOUD]
 
 
 class DataSourceOpenStack(openstack.SourceMixin, sources.DataSource):
@@ -191,10 +194,10 @@ class DataSourceOpenStack(openstack.SourceMixin, sources.DataSource):
                         'timeout': url_params.timeout_seconds})
         except openstack.NonReadable as e:
             raise sources.InvalidMetaDataException(str(e))
-        except (openstack.BrokenMetadata, IOError):
+        except (openstack.BrokenMetadata, IOError) as e:
             msg = 'Broken metadata address {addr}'.format(
                 addr=self.metadata_address)
-            raise sources.InvalidMetaDataException(msg)
+            raise sources.InvalidMetaDataException(msg) from e
         return result
 
 

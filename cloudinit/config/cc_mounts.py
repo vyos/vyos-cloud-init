@@ -65,15 +65,19 @@ swap file is created.
 from string import whitespace
 
 import logging
-import os.path
+import os
 import re
 
 from cloudinit import type_utils
+from cloudinit import subp
 from cloudinit import util
 
 # Shortname matches 'sda', 'sda1', 'xvda', 'hda', 'sdb', xvdb, vda, vdd1, sr0
 DEVICE_NAME_FILTER = r"^([x]{0,1}[shv]d[a-z][0-9]*|sr[0-9]+)$"
 DEVICE_NAME_RE = re.compile(DEVICE_NAME_FILTER)
+# Name matches 'server:/path'
+NETWORK_NAME_FILTER = r"^.+:.*"
+NETWORK_NAME_RE = re.compile(NETWORK_NAME_FILTER)
 WS = re.compile("[%s]+" % (whitespace))
 FSTAB_PATH = "/etc/fstab"
 MNT_COMMENT = "comment=cloudconfig"
@@ -90,6 +94,13 @@ def is_meta_device_name(name):
     for enumname in ("ephemeral", "ebs"):
         if name.startswith(enumname) and name.find(":") == -1:
             return True
+    return False
+
+
+def is_network_device(name):
+    # return true if this is a network device
+    if NETWORK_NAME_RE.match(name):
+        return True
     return False
 
 
@@ -121,6 +132,9 @@ def sanitize_devname(startname, transformer, log):
     if devname == "ephemeral":
         devname = "ephemeral0"
         log.debug("Adjusted mount option from ephemeral to ephemeral0")
+
+    if is_network_device(startname):
+        return startname
 
     device_path, partition_number = util.expand_dotted_devname(devname)
 
@@ -223,24 +237,24 @@ def suggested_swapsize(memsize=None, maxsize=None, fsys=None):
     return size
 
 
-def create_swapfile(fname, size):
+def create_swapfile(fname: str, size: str) -> None:
     """Size is in MiB."""
 
-    errmsg = "Failed to create swapfile '%s' of size %dMB via %s: %s"
+    errmsg = "Failed to create swapfile '%s' of size %sMB via %s: %s"
 
     def create_swap(fname, size, method):
         LOG.debug("Creating swapfile in '%s' on fstype '%s' using '%s'",
                   fname, fstype, method)
 
         if method == "fallocate":
-            cmd = ['fallocate', '-l', '%dM' % size, fname]
+            cmd = ['fallocate', '-l', '%sM' % size, fname]
         elif method == "dd":
             cmd = ['dd', 'if=/dev/zero', 'of=%s' % fname, 'bs=1M',
-                   'count=%d' % size]
+                   'count=%s' % size]
 
         try:
-            util.subp(cmd, capture=True)
-        except util.ProcessExecutionError as e:
+            subp.subp(cmd, capture=True)
+        except subp.ProcessExecutionError as e:
             LOG.warning(errmsg, fname, size, method, e)
             util.del_file(fname)
 
@@ -249,20 +263,22 @@ def create_swapfile(fname, size):
 
     fstype = util.get_mount_info(swap_dir)[1]
 
-    if fstype in ("xfs", "btrfs"):
+    if (fstype == "xfs" and
+            util.kernel_version() < (4, 18)) or fstype == "btrfs":
         create_swap(fname, size, "dd")
     else:
         try:
             create_swap(fname, size, "fallocate")
-        except util.ProcessExecutionError as e:
+        except subp.ProcessExecutionError as e:
             LOG.warning(errmsg, fname, size, "dd", e)
             LOG.warning("Will attempt with dd.")
             create_swap(fname, size, "dd")
 
-    util.chmod(fname, 0o600)
+    if os.path.exists(fname):
+        util.chmod(fname, 0o600)
     try:
-        util.subp(['mkswap', fname])
-    except util.ProcessExecutionError:
+        subp.subp(['mkswap', fname])
+    except subp.ProcessExecutionError:
         util.del_file(fname)
         raise
 
@@ -274,7 +290,6 @@ def setup_swapfile(fname, size=None, maxsize=None):
     maxsize: the maximum size
     """
     swap_dir = os.path.dirname(fname)
-    mibsize = str(int(size / (2 ** 20)))
     if str(size).lower() == "auto":
         try:
             memsize = util.read_meminfo()['total']
@@ -286,6 +301,7 @@ def setup_swapfile(fname, size=None, maxsize=None):
         size = suggested_swapsize(fsys=swap_dir, maxsize=maxsize,
                                   memsize=memsize)
 
+    mibsize = str(int(size / (2 ** 20)))
     if not size:
         LOG.debug("Not creating swap: suggested size was 0")
         return
@@ -365,17 +381,18 @@ def handle(_name, cfg, cloud, log, _args):
     fstab_devs = {}
     fstab_removed = []
 
-    for line in util.load_file(FSTAB_PATH).splitlines():
-        if MNT_COMMENT in line:
-            fstab_removed.append(line)
-            continue
+    if os.path.exists(FSTAB_PATH):
+        for line in util.load_file(FSTAB_PATH).splitlines():
+            if MNT_COMMENT in line:
+                fstab_removed.append(line)
+                continue
 
-        try:
-            toks = WS.split(line)
-        except Exception:
-            pass
-        fstab_devs[toks[0]] = line
-        fstab_lines.append(line)
+            try:
+                toks = WS.split(line)
+            except Exception:
+                pass
+            fstab_devs[toks[0]] = line
+            fstab_lines.append(line)
 
     for i in range(len(cfgmnt)):
         # skip something that wasn't a list
@@ -525,9 +542,9 @@ def handle(_name, cfg, cloud, log, _args):
     for cmd in activate_cmds:
         fmt = "Activate mounts: %s:" + ' '.join(cmd)
         try:
-            util.subp(cmd)
+            subp.subp(cmd)
             log.debug(fmt, "PASS")
-        except util.ProcessExecutionError:
+        except subp.ProcessExecutionError:
             log.warning(fmt, "FAIL")
             util.logexc(log, fmt, "FAIL")
 

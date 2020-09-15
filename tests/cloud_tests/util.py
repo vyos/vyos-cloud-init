@@ -5,6 +5,7 @@
 import base64
 import copy
 import glob
+import multiprocessing
 import os
 import random
 import shlex
@@ -12,8 +13,11 @@ import shutil
 import string
 import subprocess
 import tempfile
+import time
 import yaml
+from contextlib import contextmanager
 
+from cloudinit import subp
 from cloudinit import util as c_util
 from tests.cloud_tests import LOG
 
@@ -118,6 +122,36 @@ def current_verbosity():
     return max(min(3 - int(LOG.level / 10), 2), 0)
 
 
+@contextmanager
+def emit_dots_on_travis():
+    """
+    A context manager that emits a dot every 10 seconds if running on Travis.
+
+    Travis will kill jobs that don't emit output for a certain amount of time.
+    This context manager spins up a background process which will emit a dot to
+    stdout every 10 seconds to avoid being killed.
+
+    It should be wrapped selectively around operations that are known to take a
+    long time.
+    """
+    if os.environ.get('TRAVIS') != "true":
+        # If we aren't on Travis, don't do anything.
+        yield
+        return
+
+    def emit_dots():
+        while True:
+            print(".")
+            time.sleep(10)
+
+    dot_process = multiprocessing.Process(target=emit_dots)
+    dot_process.start()
+    try:
+        yield
+    finally:
+        dot_process.terminate()
+
+
 def is_writable_dir(path):
     """Make sure dir is writable.
 
@@ -199,8 +233,8 @@ def flat_tar(output, basedir, owner='root', group='root'):
     @param group: group archive files belong to
     @return_value: none
     """
-    c_util.subp(['tar', 'cf', output, '--owner', owner, '--group', group,
-                 '-C', basedir] + rel_files(basedir), capture=True)
+    subp.subp(['tar', 'cf', output, '--owner', owner, '--group', group,
+               '-C', basedir] + rel_files(basedir), capture=True)
 
 
 def parse_conf_list(entries, valid=None, boolean=False):
@@ -432,7 +466,7 @@ class TargetBase(object):
         return path
 
 
-class InTargetExecuteError(c_util.ProcessExecutionError):
+class InTargetExecuteError(subp.ProcessExecutionError):
     """Error type for in target commands that fail."""
 
     default_desc = 'Unexpected error while running command.'

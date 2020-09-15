@@ -41,7 +41,7 @@ class TestInstallChefOmnibus(HttprettyTestCase):
             httpretty.GET, cc_chef.OMNIBUS_URL, body=response, status=200)
         ret = (None, None)  # stdout, stderr but capture=False
 
-        with mock.patch("cloudinit.config.cc_chef.util.subp_blob_in_tempfile",
+        with mock.patch("cloudinit.config.cc_chef.subp_blob_in_tempfile",
                         return_value=ret) as m_subp_blob:
             cc_chef.install_chef_from_omnibus()
         # admittedly whitebox, but assuming subp_blob_in_tempfile works
@@ -52,7 +52,7 @@ class TestInstallChefOmnibus(HttprettyTestCase):
             m_subp_blob.call_args_list)
 
     @mock.patch('cloudinit.config.cc_chef.url_helper.readurl')
-    @mock.patch('cloudinit.config.cc_chef.util.subp_blob_in_tempfile')
+    @mock.patch('cloudinit.config.cc_chef.subp_blob_in_tempfile')
     def test_install_chef_from_omnibus_retries_url(self, m_subp_blob, m_rdurl):
         """install_chef_from_omnibus retries OMNIBUS_URL upon failure."""
 
@@ -65,23 +65,23 @@ class TestInstallChefOmnibus(HttprettyTestCase):
         cc_chef.install_chef_from_omnibus()
         expected_kwargs = {'retries': cc_chef.OMNIBUS_URL_RETRIES,
                            'url': cc_chef.OMNIBUS_URL}
-        self.assertItemsEqual(expected_kwargs, m_rdurl.call_args_list[0][1])
+        self.assertCountEqual(expected_kwargs, m_rdurl.call_args_list[0][1])
         cc_chef.install_chef_from_omnibus(retries=10)
         expected_kwargs = {'retries': 10,
                            'url': cc_chef.OMNIBUS_URL}
-        self.assertItemsEqual(expected_kwargs, m_rdurl.call_args_list[1][1])
+        self.assertCountEqual(expected_kwargs, m_rdurl.call_args_list[1][1])
         expected_subp_kwargs = {
             'args': ['-v', '2.0'],
             'basename': 'chef-omnibus-install',
             'blob': m_rdurl.return_value.contents,
             'capture': False
         }
-        self.assertItemsEqual(
+        self.assertCountEqual(
             expected_subp_kwargs,
             m_subp_blob.call_args_list[0][1])
 
     @mock.patch("cloudinit.config.cc_chef.OMNIBUS_URL", OMNIBUS_URL_HTTP)
-    @mock.patch('cloudinit.config.cc_chef.util.subp_blob_in_tempfile')
+    @mock.patch('cloudinit.config.cc_chef.subp_blob_in_tempfile')
     def test_install_chef_from_omnibus_has_omnibus_version(self, m_subp_blob):
         """install_chef_from_omnibus provides version arg to OMNIBUS_URL."""
         chef_outfile = self.tmp_path('chef.out', self.new_root)
@@ -97,7 +97,7 @@ class TestInstallChefOmnibus(HttprettyTestCase):
             'blob': response,
             'capture': False
         }
-        self.assertItemsEqual(expected_kwargs, called_kwargs)
+        self.assertCountEqual(expected_kwargs, called_kwargs)
 
 
 class TestChef(FilesystemMockingTestCase):
@@ -130,6 +130,7 @@ class TestChef(FilesystemMockingTestCase):
 
         # This should create a file of the format...
         # Created by cloud-init v. 0.7.6 on Sat, 11 Oct 2014 23:57:21 +0000
+        chef_license           "accept"
         log_level              :info
         ssl_verify_mode        :verify_none
         log_location           "/var/log/chef/client.log"
@@ -153,6 +154,7 @@ class TestChef(FilesystemMockingTestCase):
         util.write_file('/etc/cloud/templates/chef_client.rb.tmpl', tpl_file)
         cfg = {
             'chef': {
+                'chef_license': "accept",
                 'server_url': 'localhost',
                 'validation_name': 'bob',
                 'validation_key': "/etc/chef/vkey.pem",

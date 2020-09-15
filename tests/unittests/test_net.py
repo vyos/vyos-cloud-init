@@ -8,6 +8,7 @@ from cloudinit.net import (
     renderers, sysconfig)
 from cloudinit.sources.helpers import openstack
 from cloudinit import temp_utils
+from cloudinit import subp
 from cloudinit import util
 from cloudinit import safeyaml as yaml
 
@@ -24,6 +25,7 @@ import re
 import textwrap
 from yaml.serializer import Serializer
 
+import pytest
 
 DHCP_CONTENT_1 = """
 DEVICE='eth0'
@@ -424,6 +426,11 @@ network:
             mtu: 9000
             parameters:
                 gratuitous-arp: 2
+        bond2:
+            interfaces:
+            - ens5
+            macaddress: 68:05:ca:64:d3:6e
+            mtu: 9000
     ethernets:
         ens3:
             dhcp4: false
@@ -435,6 +442,11 @@ network:
             dhcp6: false
             match:
                 macaddress: 52:54:00:11:22:ff
+        ens5:
+            dhcp4: false
+            dhcp6: false
+            match:
+                macaddress: 52:54:00:99:11:99
     version: 2
 """
 
@@ -943,7 +955,7 @@ NETWORK_CONFIGS = {
                         dhcp6: true
         """).rstrip(' '),
         'expected_sysconfig_opensuse': {
-            'ifcfg-iface0':  textwrap.dedent("""\
+            'ifcfg-iface0': textwrap.dedent("""\
                 BOOTPROTO=dhcp
                 DHCLIENT6_MODE=managed
                 STARTMODE=auto""")
@@ -1027,7 +1039,7 @@ NETWORK_CONFIGS = {
     },
     'v6_and_v4': {
         'expected_sysconfig_opensuse': {
-            'ifcfg-iface0':  textwrap.dedent("""\
+            'ifcfg-iface0': textwrap.dedent("""\
                 BOOTPROTO=dhcp
                 DHCLIENT6_MODE=managed
                 STARTMODE=auto""")
@@ -3191,7 +3203,7 @@ USERCTL=no
     def test_check_ifcfg_rh(self):
         """ifcfg-rh plugin is added NetworkManager.conf if conf present."""
         render_dir = self.tmp_dir()
-        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        nm_cfg = subp.target_path(render_dir, path=self.nm_cfg_file)
         util.ensure_dir(os.path.dirname(nm_cfg))
 
         # write a template nm.conf, note plugins is a list here
@@ -3214,7 +3226,7 @@ USERCTL=no
         """ifcfg-rh plugin is append when plugins is a string."""
         render_dir = self.tmp_path("render")
         os.makedirs(render_dir)
-        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        nm_cfg = subp.target_path(render_dir, path=self.nm_cfg_file)
         util.ensure_dir(os.path.dirname(nm_cfg))
 
         # write a template nm.conf, note plugins is a value here
@@ -3239,7 +3251,7 @@ USERCTL=no
         """enable_ifcfg_plugin creates plugins value if missing."""
         render_dir = self.tmp_path("render")
         os.makedirs(render_dir)
-        nm_cfg = util.target_path(render_dir, path=self.nm_cfg_file)
+        nm_cfg = subp.target_path(render_dir, path=self.nm_cfg_file)
         util.ensure_dir(os.path.dirname(nm_cfg))
 
         # write a template nm.conf, note plugins is missing
@@ -3331,7 +3343,7 @@ USERCTL=no
                 USERCTL=no
                 VLAN=yes
                 """)
-            }
+        }
         self._compare_files_to_expected(
             expected, self._render_and_read(network_config=v2data))
 
@@ -3405,7 +3417,7 @@ USERCTL=no
                 TYPE=Ethernet
                 USERCTL=no
                 """),
-            }
+        }
         for dhcp_ver in ('dhcp4', 'dhcp6'):
             v2data = copy.deepcopy(v2base)
             if dhcp_ver == 'dhcp6':
@@ -3919,7 +3931,7 @@ class TestNetplanCleanDefault(CiTestCase):
         files = sorted(populate_dir(tmpd, content))
         netplan._clean_default(target=tmpd)
         found = [t for t in files if os.path.exists(t)]
-        expected = [util.target_path(tmpd, f) for f in (astamp, anet, ayaml)]
+        expected = [subp.target_path(tmpd, f) for f in (astamp, anet, ayaml)]
         self.assertEqual(sorted(expected), found)
 
 
@@ -3932,7 +3944,7 @@ class TestNetplanPostcommands(CiTestCase):
 
     @mock.patch.object(netplan.Renderer, '_netplan_generate')
     @mock.patch.object(netplan.Renderer, '_net_setup_link')
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_netplan_render_calls_postcmds(self, mock_subp,
                                            mock_netplan_generate,
                                            mock_net_setup_link):
@@ -3946,7 +3958,7 @@ class TestNetplanPostcommands(CiTestCase):
         render_target = 'netplan.yaml'
         renderer = netplan.Renderer(
             {'netplan_path': render_target, 'postcmds': True})
-        mock_subp.side_effect = iter([util.ProcessExecutionError])
+        mock_subp.side_effect = iter([subp.ProcessExecutionError])
         renderer.render_network_state(ns, target=render_dir)
 
         mock_netplan_generate.assert_called_with(run=True)
@@ -3954,7 +3966,7 @@ class TestNetplanPostcommands(CiTestCase):
 
     @mock.patch('cloudinit.util.SeLinuxGuard')
     @mock.patch.object(netplan, "get_devicelist")
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_netplan_postcmds(self, mock_subp, mock_devlist, mock_sel):
         mock_sel.__enter__ = mock.Mock(return_value=False)
         mock_sel.__exit__ = mock.Mock()
@@ -3970,7 +3982,7 @@ class TestNetplanPostcommands(CiTestCase):
         renderer = netplan.Renderer(
             {'netplan_path': render_target, 'postcmds': True})
         mock_subp.side_effect = iter([
-            util.ProcessExecutionError,
+            subp.ProcessExecutionError,
             ('', ''),
             ('', ''),
         ])
@@ -4017,6 +4029,8 @@ class TestEniNetworkStateToEni(CiTestCase):
 
 
 class TestCmdlineConfigParsing(CiTestCase):
+    with_logs = True
+
     simple_cfg = {
         'config': [{"type": "physical", "name": "eth0",
                     "mac_address": "c0:d6:9f:2c:e8:80",
@@ -4065,6 +4079,21 @@ class TestCmdlineConfigParsing(CiTestCase):
         raw_cmdline = 'ro network-config=' + encoded_text + ' root=foo'
         found = cmdline.read_kernel_cmdline_config(cmdline=raw_cmdline)
         self.assertEqual(found, self.simple_cfg)
+
+    def test_cmdline_with_net_config_disabled(self):
+        raw_cmdline = 'ro network-config=disabled root=foo'
+        found = cmdline.read_kernel_cmdline_config(cmdline=raw_cmdline)
+        self.assertEqual(found, {'config': 'disabled'})
+
+    def test_cmdline_with_net_config_unencoded_logs_error(self):
+        """network-config cannot be unencoded besides 'disabled'."""
+        raw_cmdline = 'ro network-config={config:disabled} root=foo'
+        found = cmdline.read_kernel_cmdline_config(cmdline=raw_cmdline)
+        self.assertIsNone(found)
+        expected_log = (
+            'ERROR: Expected base64 encoded kernel commandline parameter'
+            ' network-config. Ignoring network-config={config:disabled}.')
+        self.assertIn(expected_log, self.logs.getvalue())
 
     def test_cmdline_with_b64_gz(self):
         data = _gzip_data(json.dumps(self.simple_cfg).encode())
@@ -4242,7 +4271,7 @@ class TestNetplanRoundTrip(CiTestCase):
 
     def setUp(self):
         super(TestNetplanRoundTrip, self).setUp()
-        self.add_patch('cloudinit.net.netplan.util.subp', 'm_subp')
+        self.add_patch('cloudinit.net.netplan.subp.subp', 'm_subp')
         self.m_subp.return_value = (self.NETPLAN_INFO_OUT, '')
 
     def _render_and_read(self, network_config=None, state=None,
@@ -4654,6 +4683,51 @@ class TestEniRoundTrip(CiTestCase):
             files['/etc/network/interfaces'].splitlines())
 
 
+class TestRenderersSelect:
+
+    @pytest.mark.parametrize(
+        'renderer_selected,netplan,eni,nm,scfg,sys', (
+            # -netplan -ifupdown -nm -scfg -sys raises error
+            (net.RendererNotFoundError, False, False, False, False, False),
+            # -netplan +ifupdown -nm -scfg -sys selects eni
+            ('eni', False, True, False, False, False),
+            # +netplan +ifupdown -nm -scfg -sys selects eni
+            ('eni', True, True, False, False, False),
+            # +netplan -ifupdown -nm -scfg -sys selects netplan
+            ('netplan', True, False, False, False, False),
+            # Ubuntu with Network-Manager installed
+            # +netplan -ifupdown +nm -scfg -sys selects netplan
+            ('netplan', True, False, True, False, False),
+            # Centos/OpenSuse with Network-Manager installed selects sysconfig
+            # -netplan -ifupdown +nm -scfg +sys selects netplan
+            ('sysconfig', False, False, True, False, True),
+        ),
+    )
+    @mock.patch("cloudinit.net.renderers.netplan.available")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available_sysconfig")
+    @mock.patch("cloudinit.net.renderers.sysconfig.available_nm")
+    @mock.patch("cloudinit.net.renderers.eni.available")
+    def test_valid_renderer_from_defaults_depending_on_availability(
+        self, m_eni_avail, m_nm_avail, m_scfg_avail, m_sys_avail,
+        m_netplan_avail, renderer_selected, netplan, eni, nm, scfg, sys
+    ):
+        """Assert proper renderer per DEFAULT_PRIORITY given availability."""
+        m_eni_avail.return_value = eni          # ifupdown pkg presence
+        m_nm_avail.return_value = nm            # network-manager presence
+        m_scfg_avail.return_value = scfg        # sysconfig presence
+        m_sys_avail.return_value = sys          # sysconfig/ifup/down presence
+        m_netplan_avail.return_value = netplan  # netplan presence
+        if isinstance(renderer_selected, str):
+            (renderer_name, _rnd_class) = renderers.select(
+                priority=renderers.DEFAULT_PRIORITY
+            )
+            assert renderer_selected == renderer_name
+        else:
+            with pytest.raises(renderer_selected):
+                renderers.select(priority=renderers.DEFAULT_PRIORITY)
+
+
 class TestNetRenderers(CiTestCase):
     @mock.patch("cloudinit.net.renderers.sysconfig.available")
     @mock.patch("cloudinit.net.renderers.eni.available")
@@ -4697,58 +4771,18 @@ class TestNetRenderers(CiTestCase):
         self.assertRaises(net.RendererNotFoundError, renderers.select,
                           priority=['sysconfig', 'eni'])
 
-    @mock.patch("cloudinit.net.renderers.netplan.available")
-    @mock.patch("cloudinit.net.renderers.sysconfig.available")
-    @mock.patch("cloudinit.net.renderers.sysconfig.available_sysconfig")
-    @mock.patch("cloudinit.net.renderers.sysconfig.available_nm")
-    @mock.patch("cloudinit.net.renderers.eni.available")
-    @mock.patch("cloudinit.net.renderers.sysconfig.util.get_linux_distro")
-    def test_sysconfig_selected_on_sysconfig_enabled_distros(self, m_distro,
-                                                             m_eni, m_sys_nm,
-                                                             m_sys_scfg,
-                                                             m_sys_avail,
-                                                             m_netplan):
-        """sysconfig only selected on specific distros (rhel/sles)."""
-
-        # Ubuntu with Network-Manager installed
-        m_eni.return_value = False        # no ifupdown (ifquery)
-        m_sys_scfg.return_value = False   # no sysconfig/ifup/ifdown
-        m_sys_nm.return_value = True      # network-manager is installed
-        m_netplan.return_value = True     # netplan is installed
-        m_sys_avail.return_value = False  # no sysconfig on Ubuntu
-        m_distro.return_value = ('ubuntu', None, None)
-        self.assertEqual('netplan', renderers.select(priority=None)[0])
-
-        # Centos with Network-Manager installed
-        m_eni.return_value = False       # no ifupdown (ifquery)
-        m_sys_scfg.return_value = False  # no sysconfig/ifup/ifdown
-        m_sys_nm.return_value = True     # network-manager is installed
-        m_netplan.return_value = False   # netplan is not installed
-        m_sys_avail.return_value = True  # sysconfig is available on centos
-        m_distro.return_value = ('centos', None, None)
-        self.assertEqual('sysconfig', renderers.select(priority=None)[0])
-
-        # OpenSuse with Network-Manager installed
-        m_eni.return_value = False       # no ifupdown (ifquery)
-        m_sys_scfg.return_value = False  # no sysconfig/ifup/ifdown
-        m_sys_nm.return_value = True     # network-manager is installed
-        m_netplan.return_value = False   # netplan is not installed
-        m_sys_avail.return_value = True  # sysconfig is available on opensuse
-        m_distro.return_value = ('opensuse', None, None)
-        self.assertEqual('sysconfig', renderers.select(priority=None)[0])
-
     @mock.patch("cloudinit.net.sysconfig.available_sysconfig")
     @mock.patch("cloudinit.util.get_linux_distro")
     def test_sysconfig_available_uses_variant_mapping(self, m_distro, m_avail):
         m_avail.return_value = True
         distro_values = [
-           ('opensuse', '', ''),
-           ('opensuse-leap', '', ''),
-           ('opensuse-tumbleweed', '', ''),
-           ('sles', '', ''),
-           ('centos', '', ''),
-           ('fedora', '', ''),
-           ('redhat', '', ''),
+            ('opensuse', '', ''),
+            ('opensuse-leap', '', ''),
+            ('opensuse-tumbleweed', '', ''),
+            ('sles', '', ''),
+            ('centos', '', ''),
+            ('fedora', '', ''),
+            ('redhat', '', ''),
         ]
         for (distro_name, distro_version, flavor) in distro_values:
             m_distro.return_value = (distro_name, distro_version, flavor)
@@ -5134,7 +5168,7 @@ def _gzip_data(data):
 
 class TestRenameInterfaces(CiTestCase):
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_all(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'interface0', 'virtio_net', '0x3'),
@@ -5165,7 +5199,7 @@ class TestRenameInterfaces(CiTestCase):
                       capture=True),
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_no_driver_no_device_id(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'interface0', None, None),
@@ -5196,7 +5230,7 @@ class TestRenameInterfaces(CiTestCase):
                       capture=True),
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_all_bounce(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'interface0', 'virtio_net', '0x3'),
@@ -5231,7 +5265,7 @@ class TestRenameInterfaces(CiTestCase):
             mock.call(['ip', 'link', 'set', 'interface2', 'up'], capture=True)
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_duplicate_macs(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'eth0', 'hv_netsvc', '0x3'),
@@ -5260,7 +5294,7 @@ class TestRenameInterfaces(CiTestCase):
                       capture=True),
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_duplicate_macs_driver_no_devid(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'eth0', 'hv_netsvc', None),
@@ -5289,7 +5323,7 @@ class TestRenameInterfaces(CiTestCase):
                       capture=True),
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_multi_mac_dups(self, mock_subp):
         renames = [
             ('00:11:22:33:44:55', 'eth0', 'hv_netsvc', '0x3'),
@@ -5328,7 +5362,7 @@ class TestRenameInterfaces(CiTestCase):
                       capture=True),
         ])
 
-    @mock.patch('cloudinit.util.subp')
+    @mock.patch('cloudinit.subp.subp')
     def test_rename_macs_case_insensitive(self, mock_subp):
         """_rename_interfaces must support upper or lower case macs."""
         renames = [
