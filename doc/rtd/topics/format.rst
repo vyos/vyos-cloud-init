@@ -23,44 +23,35 @@ Using a mime-multi part file, the user can specify more than one type of data.
 For example, both a user data script and a cloud-config type could be
 specified.
 
-Supported content-types:
+Supported content-types are listed from the cloud-init subcommand make-mime::
 
-- text/cloud-boothook
-- text/cloud-config
-- text/cloud-config-archive
-- text/jinja2
-- text/part-handler
-- text/upstart-job
-- text/x-include-once-url
-- text/x-include-url
-- text/x-shellscript
+    % cloud-init devel make-mime --list-types
+    cloud-boothook
+    cloud-config
+    cloud-config-archive
+    cloud-config-jsonp
+    jinja2
+    part-handler
+    upstart-job
+    x-include-once-url
+    x-include-url
+    x-shellscript
 
-Helper script to generate mime messages
----------------------------------------
 
-.. code-block:: python
+Helper subcommand to generate mime messages
+-------------------------------------------
 
-   #!/usr/bin/python
+The cloud-init subcommand can generate MIME multi-part files: `make-mime`_.
 
-   import sys
+``make-mime`` subcommand takes pairs of (filename, "text/" mime subtype)
+separated by a colon (e.g. ``config.yaml:cloud-config``) and emits a MIME
+multipart message to stdout.  An example invocation, assuming you have your
+cloud config in ``config.yaml`` and a shell script in ``script.sh`` and want
+to store the multipart message in ``user-data``::
 
-   from email.mime.multipart import MIMEMultipart
-   from email.mime.text import MIMEText
+    % cloud-init devel make-mime -a config.yaml:cloud-config -a script.sh:x-shellscript > user-data
 
-   if len(sys.argv) == 1:
-       print("%s input-file:type ..." % (sys.argv[0]))
-       sys.exit(1)
-
-   combined_message = MIMEMultipart()
-   for i in sys.argv[1:]:
-       (filename, format_type) = i.split(":", 1)
-       with open(filename) as fh:
-           contents = fh.read()
-       sub_message = MIMEText(contents, format_type, sys.getdefaultencoding())
-       sub_message.add_header('Content-Disposition', 'attachment; filename="%s"' % (filename))
-       combined_message.attach(sub_message)
-
-   print(combined_message)
+.. _make-mime: https://github.com/canonical/cloud-init/blob/master/cloudinit/cmd/devel/make_mime.py
 
 
 User-Data Script
@@ -126,7 +117,7 @@ Begins with: ``#cloud-config`` or ``Content-Type: text/cloud-config`` when
 using a MIME archive.
 
 .. note::
-   New in cloud-init v. 18.4: Cloud config dta can also render cloud instance
+   New in cloud-init v. 18.4: Cloud config data can also render cloud instance
    metadata variables using jinja templating. See
    :ref:`instance_metadata` for more information.
 

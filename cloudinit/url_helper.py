@@ -95,7 +95,7 @@ def read_file_or_url(url, **kwargs):
             code = e.errno
             if e.errno == ENOENT:
                 code = NOT_FOUND
-            raise UrlError(cause=e, code=code, headers=None, url=url)
+            raise UrlError(cause=e, code=code, headers=None, url=url) from e
         return FileResponse(file_path, contents=contents)
     else:
         return readurl(url, **kwargs)
@@ -281,13 +281,14 @@ def readurl(url, data=None, timeout=None, retries=0, sec_between=1,
         for (k, v) in req_args.items():
             if k == 'data':
                 continue
-            filtered_req_args[k] = v
-            if k == 'headers':
-                for hkey, _hval in v.items():
-                    if hkey in headers_redact:
-                        filtered_req_args[k][hkey] = (
-                            copy.deepcopy(req_args[k][hkey]))
-                        filtered_req_args[k][hkey] = REDACTED
+            if k == 'headers' and headers_redact:
+                matched_headers = [k for k in headers_redact if v.get(k)]
+                if matched_headers:
+                    filtered_req_args[k] = copy.deepcopy(v)
+                    for key in matched_headers:
+                        filtered_req_args[k][key] = REDACTED
+            else:
+                filtered_req_args[k] = v
         try:
 
             if log_req_resp:
@@ -574,8 +575,8 @@ def oauth_headers(url, consumer_key, token_key, token_secret, consumer_secret,
                   timestamp=None):
     try:
         import oauthlib.oauth1 as oauth1
-    except ImportError:
-        raise NotImplementedError('oauth support is not available')
+    except ImportError as e:
+        raise NotImplementedError('oauth support is not available') from e
 
     if timestamp:
         timestamp = str(timestamp)

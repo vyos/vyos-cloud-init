@@ -12,8 +12,6 @@ order to validate return responses.
 
 '''
 
-from __future__ import print_function
-
 from binascii import crc32
 import json
 import multiprocessing
@@ -22,7 +20,7 @@ import os.path
 import re
 import signal
 import stat
-import unittest2
+import unittest
 import uuid
 
 from cloudinit import serial
@@ -34,8 +32,8 @@ from cloudinit.sources.DataSourceSmartOS import (
 from cloudinit.event import EventType
 
 from cloudinit import helpers as c_helpers
-from cloudinit.util import (
-    b64e, subp, ProcessExecutionError, which, write_file)
+from cloudinit.util import (b64e, write_file)
+from cloudinit.subp import (subp, ProcessExecutionError, which)
 
 from cloudinit.tests.helpers import (
     CiTestCase, mock, FilesystemMockingTestCase, skipIf)
@@ -669,7 +667,7 @@ class TestIdentifyFile(CiTestCase):
         with self.allow_subp(["file"]):
             self.assertEqual("text/plain", identify_file(fname))
 
-    @mock.patch(DSMOS + ".util.subp")
+    @mock.patch(DSMOS + ".subp.subp")
     def test_returns_none_on_error(self, m_subp):
         """On 'file' execution error, None should be returned."""
         m_subp.side_effect = ProcessExecutionError("FILE_FAILED", exit_code=99)
@@ -1095,11 +1093,11 @@ class TestNetworkConversion(CiTestCase):
         self.assertEqual(expected, found)
 
 
-@unittest2.skipUnless(get_smartos_environ() == SMARTOS_ENV_KVM,
-                      "Only supported on KVM and bhyve guests under SmartOS")
-@unittest2.skipUnless(os.access(SERIAL_DEVICE, os.W_OK),
-                      "Requires write access to " + SERIAL_DEVICE)
-@unittest2.skipUnless(HAS_PYSERIAL is True, "pyserial not available")
+@unittest.skipUnless(get_smartos_environ() == SMARTOS_ENV_KVM,
+                     "Only supported on KVM and bhyve guests under SmartOS")
+@unittest.skipUnless(os.access(SERIAL_DEVICE, os.W_OK),
+                     "Requires write access to " + SERIAL_DEVICE)
+@unittest.skipUnless(HAS_PYSERIAL is True, "pyserial not available")
 class TestSerialConcurrency(CiTestCase):
     """
        This class tests locking on an actual serial port, and as such can only

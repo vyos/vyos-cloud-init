@@ -215,7 +215,7 @@ class NetworkState(object):
         return (
             route.get('prefix') == 0
             and route.get('network') in default_nets
-            )
+        )
 
 
 class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
@@ -297,9 +297,10 @@ class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
             command_type = command['type']
             try:
                 handler = self.command_handlers[command_type]
-            except KeyError:
-                raise RuntimeError("No handler found for"
-                                   " command '%s'" % command_type)
+            except KeyError as e:
+                raise RuntimeError(
+                    "No handler found for  command '%s'" % command_type
+                ) from e
             try:
                 handler(self, command)
             except InvalidCommand:
@@ -312,13 +313,14 @@ class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
 
     def parse_config_v2(self, skip_broken=True):
         for command_type, command in self._config.items():
-            if command_type == 'version':
+            if command_type in ['version', 'renderer']:
                 continue
             try:
                 handler = self.command_handlers[command_type]
-            except KeyError:
-                raise RuntimeError("No handler found for"
-                                   " command '%s'" % command_type)
+            except KeyError as e:
+                raise RuntimeError(
+                    "No handler found for command '%s'" % command_type
+                ) from e
             try:
                 handler(self, command)
                 self._v2_common(command)
@@ -696,7 +698,7 @@ class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
 
     def handle_wifis(self, command):
         LOG.warning('Wifi configuration is only available to distros with'
-                    'netplan rendering support.')
+                    ' netplan rendering support.')
 
     def _v2_common(self, cfg):
         LOG.debug('v2_common: handling config:\n%s', cfg)
@@ -722,10 +724,10 @@ class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
             item_params = dict((key, value) for (key, value) in
                                item_cfg.items() if key not in
                                NETWORK_V2_KEY_FILTER)
-            # we accept the fixed spelling, but write the old for compatability
+            # we accept the fixed spelling, but write the old for compatibility
             # Xenial does not have an updated netplan which supports the
             # correct spelling.  LP: #1756701
-            params = item_params['parameters']
+            params = item_params.get('parameters', {})
             grat_value = params.pop('gratuitous-arp', None)
             if grat_value:
                 params['gratuitious-arp'] = grat_value
@@ -734,8 +736,7 @@ class NetworkStateInterpreter(metaclass=CommandHandlerMeta):
                 'type': cmd_type,
                 'name': item_name,
                 cmd_type + '_interfaces': item_cfg.get('interfaces'),
-                'params': dict((v2key_to_v1[k], v) for k, v in
-                               item_params.get('parameters', {}).items())
+                'params': dict((v2key_to_v1[k], v) for k, v in params.items())
             }
             if 'mtu' in item_cfg:
                 v1_cmd['mtu'] = item_cfg['mtu']
@@ -915,9 +916,10 @@ def _normalize_route(route):
     if metric:
         try:
             normal_route['metric'] = int(metric)
-        except ValueError:
+        except ValueError as e:
             raise TypeError(
-                'Route config metric {} is not an integer'.format(metric))
+                'Route config metric {} is not an integer'.format(metric)
+            ) from e
     return normal_route
 
 

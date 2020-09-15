@@ -4,7 +4,7 @@
 
 import importlib
 import inspect
-import unittest2
+import unittest
 
 from cloudinit.util import read_conf
 
@@ -21,8 +21,10 @@ def discover_test(test_name):
         config.name_sanitize(test_name))
     try:
         testmod = importlib.import_module(testmod_name)
-    except NameError:
-        raise ValueError('no test verifier found at: {}'.format(testmod_name))
+    except NameError as e:
+        raise ValueError(
+            'no test verifier found at: {}'.format(testmod_name)
+        ) from e
 
     found = [mod for name, mod in inspect.getmembers(testmod)
              if (inspect.isclass(mod)
@@ -48,7 +50,7 @@ def get_test_class(test_name, test_data, test_conf):
 
         def __str__(self):
             return "%s (%s)" % (self._testMethodName,
-                                unittest2.util.strclass(self._realclass))
+                                unittest.util.strclass(self._realclass))
 
         @classmethod
         def setUpClass(cls):
@@ -62,9 +64,9 @@ def get_suite(test_name, data, conf):
 
     @return_value: a test suite
     """
-    suite = unittest2.TestSuite()
+    suite = unittest.TestSuite()
     suite.addTest(
-        unittest2.defaultTestLoader.loadTestsFromTestCase(
+        unittest.defaultTestLoader.loadTestsFromTestCase(
             get_test_class(test_name, data, conf)))
     return suite
 

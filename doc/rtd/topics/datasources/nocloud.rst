@@ -32,7 +32,7 @@ The permitted keys are:
 
 With ``ds=nocloud``, the ``seedfrom`` value must start with ``/`` or
 ``file://``.  With ``ds=nocloud-net``, the ``seedfrom`` value must start
-with ``http://``, ``https://`` or ``ftp://``
+with ``http://`` or ``https://``.
 
 e.g. you can pass this option to QEMU:
 
@@ -52,6 +52,12 @@ These user-data and meta-data files are expected to be in the following format.
 
 Basically, user-data is simply user-data and meta-data is a yaml formatted file
 representing what you'd find in the EC2 metadata service.
+
+You may also optionally provide a vendor-data file in the following format.
+
+::
+
+  /vendor-data
 
 Given a disk ubuntu 12.04 cloud image in 'disk.img', you can create a
 sufficient disk by following the example below.
@@ -133,12 +139,12 @@ be network configuration based on the filename.
   version: 2
   ethernets:
     interface0:
-       match:
-           mac_address: "52:54:00:12:34:00"
-       set-name: interface0
-       addresses:
-       - 192.168.1.10/255.255.255.0
-       gateway4: 192.168.1.254
+      match:
+        mac_address: "52:54:00:12:34:00"
+      set-name: interface0
+      addresses:
+        - 192.168.1.10/255.255.255.0
+      gateway4: 192.168.1.254
 
 
 .. _iso9660: https://en.wikipedia.org/wiki/ISO_9660

@@ -15,6 +15,7 @@ from cloudinit.tests.helpers import (
 
 from cloudinit import handlers
 from cloudinit import helpers
+from cloudinit import subp
 from cloudinit import util
 
 from cloudinit.handlers.cloud_config import CloudConfigPartHandler
@@ -66,7 +67,7 @@ class TestUpstartJobPartHandler(FilesystemMockingTestCase):
         util.ensure_dir("/etc/upstart")
 
         with mock.patch(self.mpath + 'SUITABLE_UPSTART', return_value=True):
-            with mock.patch.object(util, 'subp') as m_subp:
+            with mock.patch.object(subp, 'subp') as m_subp:
                 h = UpstartJobPartHandler(paths)
                 h.handle_part('', handlers.CONTENT_START,
                               None, None, None)
@@ -109,7 +110,7 @@ class TestJinjaTemplatePartHandler(CiTestCase):
         cloudconfig_handler = CloudConfigPartHandler(self.paths)
         h = JinjaTemplatePartHandler(
             self.paths, sub_handlers=[script_handler, cloudconfig_handler])
-        self.assertItemsEqual(
+        self.assertCountEqual(
             ['text/cloud-config', 'text/cloud-config-jsonp',
              'text/x-shellscript'],
             h.sub_handlers)
@@ -120,7 +121,7 @@ class TestJinjaTemplatePartHandler(CiTestCase):
         cloudconfig_handler = CloudConfigPartHandler(self.paths)
         h = JinjaTemplatePartHandler(
             self.paths, sub_handlers=[script_handler, cloudconfig_handler])
-        self.assertItemsEqual(
+        self.assertCountEqual(
             ['text/cloud-config', 'text/cloud-config-jsonp',
              'text/x-shellscript'],
             h.sub_handlers)
@@ -302,7 +303,7 @@ class TestConvertJinjaInstanceData(CiTestCase):
         expected_data.update({'v1key1': 'v1.1', 'v2key1': 'v2.1'})
 
         converted_data = convert_jinja_instance_data(data=data)
-        self.assertItemsEqual(
+        self.assertCountEqual(
             ['ds', 'v1', 'v2', 'v1key1', 'v2key1'], converted_data.keys())
         self.assertEqual(
             expected_data,

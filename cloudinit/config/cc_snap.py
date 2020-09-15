@@ -12,6 +12,7 @@ from cloudinit.config.schema import (
     get_schema_doc, validate_cloudconfig_schema)
 from cloudinit.settings import PER_INSTANCE
 from cloudinit.subp import prepend_base_command
+from cloudinit import subp
 from cloudinit import util
 
 
@@ -61,9 +62,9 @@ schema = {
         snap:
             assertions:
               00: |
-              signed_assertion_blob_here
+                signed_assertion_blob_here
               02: |
-              signed_assertion_blob_here
+                signed_assertion_blob_here
             commands:
               00: snap create-user --sudoer --known <snap-user>@mydomain.com
               01: snap install canonical-livepatch
@@ -85,6 +86,21 @@ schema = {
                 01: ['snap', 'install', 'vlc']
                 02: snap install vlc
                 03: 'snap install vlc'
+    """), dedent("""\
+        # You can use a list of commands
+        snap:
+            commands:
+                - ['install', 'vlc']
+                - ['snap', 'install', 'vlc']
+                - snap install vlc
+                - 'snap install vlc'
+    """), dedent("""\
+        # You can use a list of assertions
+        snap:
+            assertions:
+                - signed_assertion_blob_here
+                - |
+                    signed_assertion_blob_here
     """)],
     'frequency': PER_INSTANCE,
     'type': 'object',
@@ -98,7 +114,8 @@ schema = {
                     'additionalItems': False,  # Reject items non-string
                     'minItems': 1,
                     'minProperties': 1,
-                    'uniqueItems': True
+                    'uniqueItems': True,
+                    'additionalProperties': {'type': 'string'},
                 },
                 'commands': {
                     'type': ['object', 'array'],  # Array of strings or dict
@@ -110,6 +127,12 @@ schema = {
                     'additionalItems': False,  # Reject non-string & non-list
                     'minItems': 1,
                     'minProperties': 1,
+                    'additionalProperties': {
+                        'oneOf': [
+                            {'type': 'string'},
+                            {'type': 'array', 'items': {'type': 'string'}},
+                        ],
+                    },
                 },
                 'squashfuse_in_container': {
                     'type': 'boolean'
@@ -121,10 +144,6 @@ schema = {
         }
     }
 }
-
-# TODO schema for 'assertions' and 'commands' are too permissive at the moment.
-# Once python-jsonschema supports schema draft 6 add support for arbitrary
-# object keys with 'patternProperties' constraint to validate string values.
 
 __doc__ = get_schema_doc(schema)  # Supplement python help()
 
@@ -157,7 +176,7 @@ def add_assertions(assertions):
         LOG.debug('Snap acking: %s', asrt.split('\n')[0:2])
 
     util.write_file(ASSERTIONS_FILE, combined.encode('utf-8'))
-    util.subp(snap_cmd + [ASSERTIONS_FILE], capture=True)
+    subp.subp(snap_cmd + [ASSERTIONS_FILE], capture=True)
 
 
 def run_commands(commands):
@@ -186,8 +205,8 @@ def run_commands(commands):
     for command in fixed_snap_commands:
         shell = isinstance(command, str)
         try:
-            util.subp(command, shell=shell, status_cb=sys.stderr.write)
-        except util.ProcessExecutionError as e:
+            subp.subp(command, shell=shell, status_cb=sys.stderr.write)
+        except subp.ProcessExecutionError as e:
             cmd_failures.append(str(e))
     if cmd_failures:
         msg = 'Failures running snap commands:\n{cmd_failures}'.format(

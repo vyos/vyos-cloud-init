@@ -10,6 +10,7 @@ import os
 
 from cloudinit import log as logging
 from cloudinit import sources
+from cloudinit import subp
 from cloudinit import util
 
 from cloudinit.net import eni
@@ -71,11 +72,11 @@ class DataSourceConfigDrive(openstack.SourceMixin, sources.DataSource):
         if not found:
             dslist = self.sys_cfg.get('datasource_list')
             for dev in find_candidate_devs(dslist=dslist):
-                try:
-                    if util.is_FreeBSD() and dev.startswith("/dev/cd"):
+                mtype = None
+                if util.is_BSD():
+                    if dev.startswith("/dev/cd"):
                         mtype = "cd9660"
-                    else:
-                        mtype = None
+                try:
                     results = util.mount_cb(dev, read_config_drive,
                                             mtype=mtype)
                     found = dev
@@ -245,7 +246,7 @@ def find_candidate_devs(probe_optical=True, dslist=None):
         for device in OPTICAL_DEVICES:
             try:
                 util.find_devs_with(path=device)
-            except util.ProcessExecutionError:
+            except subp.ProcessExecutionError:
                 pass
 
     by_fstype = []

@@ -213,6 +213,40 @@ c: d
         self.assertEqual(1, len(cc))
         self.assertEqual('c', cc['a'])
 
+    def test_cloud_config_as_x_shell_script(self):
+        blob_cc = '''
+#cloud-config
+a: b
+c: d
+'''
+        message_cc = MIMEBase("text", "x-shellscript")
+        message_cc.set_payload(blob_cc)
+
+        blob_jp = '''
+#cloud-config-jsonp
+[
+     { "op": "replace", "path": "/a", "value": "c" },
+     { "op": "remove", "path": "/c" }
+]
+'''
+
+        message_jp = MIMEBase('text', "cloud-config-jsonp")
+        message_jp.set_payload(blob_jp)
+
+        message = MIMEMultipart()
+        message.attach(message_cc)
+        message.attach(message_jp)
+
+        self.reRoot()
+        ci = stages.Init()
+        ci.datasource = FakeDataSource(str(message))
+        ci.fetch()
+        ci.consume_data()
+        cc_contents = util.load_file(ci.paths.get_ipath("cloud_config"))
+        cc = util.load_yaml(cc_contents)
+        self.assertEqual(1, len(cc))
+        self.assertEqual('c', cc['a'])
+
     def test_vendor_user_yaml_cloud_config(self):
         vendor_blob = '''
 #cloud-config
@@ -592,6 +626,33 @@ class TestConsumeUserDataHttp(TestConsumeUserData, helpers.HttprettyTestCase):
     @mock.patch('cloudinit.url_helper.time.sleep')
     def test_include_bad_url(self, mock_sleep):
         """Test #include with a bad URL."""
+        bad_url = 'http://bad/forbidden'
+        bad_data = '#cloud-config\nbad: true\n'
+        httpretty.register_uri(httpretty.GET, bad_url, bad_data, status=403)
+
+        included_url = 'http://hostname/path'
+        included_data = '#cloud-config\nincluded: true\n'
+        httpretty.register_uri(httpretty.GET, included_url, included_data)
+
+        blob = '#include\n%s\n%s' % (bad_url, included_url)
+
+        self.reRoot()
+        ci = stages.Init()
+        ci.datasource = FakeDataSource(blob)
+        ci.fetch()
+        with self.assertRaises(Exception) as context:
+            ci.consume_data()
+        self.assertIn('403', str(context.exception))
+
+        with self.assertRaises(FileNotFoundError):
+            util.load_file(ci.paths.get_ipath("cloud_config"))
+
+    @mock.patch('cloudinit.url_helper.time.sleep')
+    @mock.patch(
+        "cloudinit.user_data.features.ERROR_ON_USER_DATA_FAILURE", False
+    )
+    def test_include_bad_url_no_fail(self, mock_sleep):
+        """Test #include with a bad URL and failure disabled"""
         bad_url = 'http://bad/forbidden'
         bad_data = '#cloud-config\nbad: true\n'
         httpretty.register_uri(httpretty.GET, bad_url, bad_data, status=403)

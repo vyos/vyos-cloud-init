@@ -13,6 +13,7 @@ import re
 
 from cloudinit import log as logging
 from cloudinit.net.network_state import net_prefix_to_ipv4_mask
+from cloudinit import subp
 from cloudinit import util
 
 from cloudinit.simpletable import SimpleTable
@@ -91,6 +92,53 @@ def _netdev_info_iproute(ipaddr_out):
     return devs
 
 
+def _netdev_info_ifconfig_netbsd(ifconfig_data):
+    # fields that need to be returned in devs for each dev
+    devs = {}
+    for line in ifconfig_data.splitlines():
+        if len(line) == 0:
+            continue
+        if line[0] not in ("\t", " "):
+            curdev = line.split()[0]
+            # current ifconfig pops a ':' on the end of the device
+            if curdev.endswith(':'):
+                curdev = curdev[:-1]
+            if curdev not in devs:
+                devs[curdev] = deepcopy(DEFAULT_NETDEV_INFO)
+        toks = line.lower().strip().split()
+        if len(toks) > 1:
+            if re.search(r"flags=[x\d]+<up.*>", toks[1]):
+                devs[curdev]['up'] = True
+
+        for i in range(len(toks)):
+            if toks[i] == "inet":  # Create new ipv4 addr entry
+                network, net_bits = toks[i + 1].split('/')
+                devs[curdev]['ipv4'].append(
+                    {'ip': network, 'mask': net_prefix_to_ipv4_mask(net_bits)})
+            elif toks[i] == "broadcast":
+                devs[curdev]['ipv4'][-1]['bcast'] = toks[i + 1]
+            elif toks[i] == "address:":
+                devs[curdev]['hwaddr'] = toks[i + 1]
+            elif toks[i] == "inet6":
+                if toks[i + 1] == "addr:":
+                    devs[curdev]['ipv6'].append({'ip': toks[i + 2]})
+                else:
+                    devs[curdev]['ipv6'].append({'ip': toks[i + 1]})
+            elif toks[i] == "prefixlen":  # Add prefix to current ipv6 value
+                addr6 = devs[curdev]['ipv6'][-1]['ip'] + "/" + toks[i + 1]
+                devs[curdev]['ipv6'][-1]['ip'] = addr6
+            elif toks[i].startswith("scope:"):
+                devs[curdev]['ipv6'][-1]['scope6'] = toks[i].lstrip("scope:")
+            elif toks[i] == "scopeid":
+                res = re.match(r'.*<(\S+)>', toks[i + 1])
+                if res:
+                    devs[curdev]['ipv6'][-1]['scope6'] = res.group(1)
+                else:
+                    devs[curdev]['ipv6'][-1]['scope6'] = toks[i + 1]
+
+    return devs
+
+
 def _netdev_info_ifconfig(ifconfig_data):
     # fields that need to be returned in devs for each dev
     devs = {}
@@ -149,13 +197,16 @@ def _netdev_info_ifconfig(ifconfig_data):
 
 def netdev_info(empty=""):
     devs = {}
-    if util.which('ip'):
+    if util.is_NetBSD():
+        (ifcfg_out, _err) = subp.subp(["ifconfig", "-a"], rcs=[0, 1])
+        devs = _netdev_info_ifconfig_netbsd(ifcfg_out)
+    elif subp.which('ip'):
         # Try iproute first of all
-        (ipaddr_out, _err) = util.subp(["ip", "addr", "show"])
+        (ipaddr_out, _err) = subp.subp(["ip", "addr", "show"])
         devs = _netdev_info_iproute(ipaddr_out)
-    elif util.which('ifconfig'):
+    elif subp.which('ifconfig'):
         # Fall back to net-tools if iproute2 is not present
-        (ifcfg_out, _err) = util.subp(["ifconfig", "-a"], rcs=[0, 1])
+        (ifcfg_out, _err) = subp.subp(["ifconfig", "-a"], rcs=[0, 1])
         devs = _netdev_info_ifconfig(ifcfg_out)
     else:
         LOG.warning(
@@ -235,10 +286,10 @@ def _netdev_route_info_iproute(iproute_data):
         entry['flags'] = ''.join(flags)
         routes['ipv4'].append(entry)
     try:
-        (iproute_data6, _err6) = util.subp(
+        (iproute_data6, _err6) = subp.subp(
             ["ip", "--oneline", "-6", "route", "list", "table", "all"],
             rcs=[0, 1])
-    except util.ProcessExecutionError:
+    except subp.ProcessExecutionError:
         pass
     else:
         entries6 = iproute_data6.splitlines()
@@ -307,9 +358,9 @@ def _netdev_route_info_netstat(route_data):
         routes['ipv4'].append(entry)
 
     try:
-        (route_data6, _err6) = util.subp(
+        (route_data6, _err6) = subp.subp(
             ["netstat", "-A", "inet6", "--route", "--numeric"], rcs=[0, 1])
-    except util.ProcessExecutionError:
+    except subp.ProcessExecutionError:
         pass
     else:
         entries6 = route_data6.splitlines()
@@ -343,13 +394,13 @@ def _netdev_route_info_netstat(route_data):
 
 def route_info():
     routes = {}
-    if util.which('ip'):
+    if subp.which('ip'):
         # Try iproute first of all
-        (iproute_out, _err) = util.subp(["ip", "-o", "route", "list"])
+        (iproute_out, _err) = subp.subp(["ip", "-o", "route", "list"])
         routes = _netdev_route_info_iproute(iproute_out)
-    elif util.which('netstat'):
+    elif subp.which('netstat'):
         # Fall back to net-tools if iproute2 is not present
-        (route_out, _err) = util.subp(
+        (route_out, _err) = subp.subp(
             ["netstat", "--route", "--numeric", "--extend"], rcs=[0, 1])
         routes = _netdev_route_info_netstat(route_out)
     else:

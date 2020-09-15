@@ -6,6 +6,7 @@ import os
 from uuid import uuid4
 
 from cloudinit import safeyaml
+from cloudinit import subp
 from cloudinit import util
 from cloudinit.tests.helpers import (
     CiTestCase, dir2dict, populate_dir, populate_dir_with_ts)
@@ -160,8 +161,8 @@ class DsIdentifyBase(CiTestCase):
 
         rc = 0
         try:
-            out, err = util.subp(['sh', '-c', '. %s' % wrap], capture=True)
-        except util.ProcessExecutionError as e:
+            out, err = subp.subp(['sh', '-c', '. %s' % wrap], capture=True)
+        except subp.ProcessExecutionError as e:
             rc = e.exit_code
             out = e.stdout
             err = e.stderr
@@ -271,6 +272,10 @@ class TestDsIdentify(DsIdentifyBase):
     def test_rbx_cloud(self):
         """Rbx datasource has a disk with LABEL=CLOUDMD."""
         self._test_ds_found('RbxCloud')
+
+    def test_rbx_cloud_lower(self):
+        """Rbx datasource has a disk with LABEL=cloudmd."""
+        self._test_ds_found('RbxCloudLower')
 
     def test_config_drive_upper(self):
         """ConfigDrive datasource has a disk with LABEL=CONFIG-2."""
@@ -447,6 +452,10 @@ class TestDsIdentify(DsIdentifyBase):
         """Open Telecom identification."""
         self._test_ds_found('OpenStack-OpenTelekom')
 
+    def test_openstack_sap_ccloud(self):
+        """SAP Converged Cloud identification"""
+        self._test_ds_found('OpenStack-SAPCCloud')
+
     def test_openstack_asset_tag_nova(self):
         """OpenStack identification via asset tag OpenStack Nova."""
         self._test_ds_found('OpenStack-AssetTag-Nova')
@@ -568,6 +577,10 @@ class TestDsIdentify(DsIdentifyBase):
         """NoCloud is found with uppercase filesystem label."""
         self._test_ds_found('NoCloudUpper')
 
+    def test_nocloud_fatboot(self):
+        """NoCloud fatboot label - LP: #184166."""
+        self._test_ds_found('NoCloud-fatboot')
+
     def test_nocloud_seed(self):
         """Nocloud seed directory."""
         self._test_ds_found('NoCloud-seed')
@@ -607,8 +620,10 @@ class TestDsIdentify(DsIdentifyBase):
         ret = self._check_via_dict(
             cust, RC_FOUND,
             func=".", args=[os.path.join(rootd, mpp)], rootd=rootd)
-        line = [l for l in ret.stdout.splitlines() if l.startswith(pre)][0]
-        toks = line.replace(pre, "").split(":")
+        match = [
+            line for line in ret.stdout.splitlines() if line.startswith(pre)
+        ][0]
+        toks = match.replace(pre, "").split(":")
         expected = ["/sbin", "/bin", "/usr/sbin", "/usr/bin", "/mycust/path"]
         self.assertEqual(expected, [p for p in expected if p in toks],
                          "path did not have expected tokens")
@@ -805,6 +820,20 @@ VALID_CFG = {
             'dev/vdb': 'pretend iso content for cidata\n',
         }
     },
+    'NoCloud-fatboot': {
+        'ds': 'NoCloud',
+        'mocks': [
+            MOCK_VIRT_IS_XEN,
+            {'name': 'blkid', 'ret': 0,
+             'out': blkid_out(
+                 BLKID_UEFI_UBUNTU +
+                 [{'DEVNAME': 'xvdb', 'TYPE': 'vfat', 'SEC_TYPE': 'msdos',
+                   'UUID': '355a-4FC2', 'LABEL_FATBOOT': 'cidata'}])},
+        ],
+        'files': {
+            'dev/vdb': 'pretend iso content for cidata\n',
+        }
+    },
     'NoCloud-seed': {
         'ds': 'NoCloud',
         'files': {
@@ -833,6 +862,12 @@ VALID_CFG = {
         'ds': 'OpenStack',
         'files': {P_CHASSIS_ASSET_TAG: 'OpenTelekomCloud\n'},
         'mocks': [MOCK_VIRT_IS_XEN],
+    },
+    'OpenStack-SAPCCloud': {
+        # SAP CCloud hosts use OpenStack on VMware
+        'ds': 'OpenStack',
+        'files': {P_CHASSIS_ASSET_TAG: 'SAP CCloud VM\n'},
+        'mocks': [MOCK_VIRT_IS_VMWARE],
     },
     'OpenStack-AssetTag-Nova': {
         # VMware vSphere can't modify product-name, LP: #1669875
@@ -935,6 +970,18 @@ VALID_CFG = {
              )},
         ],
     },
+    'RbxCloudLower': {
+        'ds': 'RbxCloud',
+        'mocks': [
+            {'name': 'blkid', 'ret': 0,
+             'out': blkid_out(
+                 [{'DEVNAME': 'vda1', 'TYPE': 'vfat', 'PARTUUID': uuid4()},
+                  {'DEVNAME': 'vda2', 'TYPE': 'ext4',
+                   'LABEL': 'cloudimg-rootfs', 'PARTUUID': uuid4()},
+                  {'DEVNAME': 'vdb', 'TYPE': 'vfat', 'LABEL': 'cloudmd'}]
+             )},
+        ],
+    },
     'Hetzner': {
         'ds': 'Hetzner',
         'files': {P_SYS_VENDOR: 'Hetzner\n'},
@@ -1028,11 +1075,11 @@ VALID_CFG = {
     'Ec2-E24Cloud': {
         'ds': 'Ec2',
         'files': {P_SYS_VENDOR: 'e24cloud\n'},
-     },
+    },
     'Ec2-E24Cloud-negative': {
         'ds': 'Ec2',
         'files': {P_SYS_VENDOR: 'e24cloudyday\n'},
-     }
+    }
 }
 
 # vi: ts=4 expandtab
