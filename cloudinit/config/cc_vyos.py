@@ -30,6 +30,7 @@ from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
 from cloudinit.sources import INSTANCE_JSON_FILE
 from cloudinit.util import load_file, load_json
+from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
 from vyos.configtree import ConfigTree
 
 # configure logging
@@ -106,52 +107,66 @@ def hostname_filter(hostname):
 
 
 # configure system parameters from OVF template
-def set_config_ovf(config, metadata):
+def set_config_ovf(config, ovf_environment):
     logger.debug("Applying configuration from an OVF template")
 
-    ip_0 = metadata['ip0']
-    mask_0 = metadata['netmask0']
-    gateway = metadata['gateway']
-    DNS = list(metadata['DNS'].replace(' ', '').split(','))
-    NTP = list(metadata['NTP'].replace(' ', '').split(','))
-    APIKEY = metadata['APIKEY']
-    APIPORT = metadata['APIPORT']
-    APIDEBUG = metadata['APIDEBUG']
+    # Check for 'null' values and replace them by the 'None'
+    # this make the rest of the code easier
+    for (ovf_property_key, ovf_property_value) in ovf_environment.items():
+        if ovf_property_value == 'null':
+            ovf_environment[ovf_property_key] = None
 
-    if ip_0 and ip_0 != 'null' and mask_0 and mask_0 != 'null' and gateway and gateway != 'null':
-        cidr = str(ipaddress.IPv4Network('0.0.0.0/' + mask_0).prefixlen)
-        ipcidr = ip_0 + '/' + cidr
+    # get all variables required for configuration
+    ip_address = ovf_environment['ip0']
+    ip_mask = ovf_environment['netmask0']
+    gateway = ovf_environment['gateway']
+    dns_string = ovf_environment['DNS']
+    ntp_string = ovf_environment['NTP']
+    api_key = ovf_environment['APIKEY']
+    api_port = ovf_environment['APIPORT']
+    api_debug = ovf_environment['APIDEBUG']
 
-        set_ipaddress(config, 'eth0', ipcidr)
-        config.set_tag(['interfaces', 'ethernet'])
+    # Configure an interface and default route
+    if ip_address and ip_mask and gateway:
+        ip_address_cidr = ipaddress.ip_interface("{}/{}".format(ip_address, ip_mask)).with_prefixlen
+        logger.debug("Configuring the IP address on the eth0 interface: {}".format(ip_address_cidr))
+        set_ipaddress(config, 'eth0', ip_address_cidr)
+
+        logger.debug("Configuring default route via: {}".format(gateway))
         config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=gateway, replace=True)
         config.set_tag(['protocols', 'static', 'route'])
         config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
     else:
+        logger.debug("Configuring a DHCP client on the eth0 interface (fallback from OVF)")
         set_ipaddress(config, 'eth0', 'dhcp')
-        config.set_tag(['interfaces', 'ethernet'])
 
-    DNS = [server for server in DNS if server and server != 'null']
-    if DNS:
-        for server in DNS:
+    # Configure DNS servers
+    if dns_string:
+        dns_list = list(dns_string.replace(' ', '').split(','))
+        for server in dns_list:
+            logger.debug("Configuring DNS server: {}".format(server))
             config.set(['system', 'name-server'], value=server, replace=False)
 
-    NTP = [server for server in NTP if server and server != 'null']
-    if NTP:
-        for server in NTP:
+    # Configure NTP servers
+    if ntp_string:
+        ntp_list = list(ntp_string.replace(' ', '').split(','))
+        for server in ntp_list:
+            logger.debug("Configuring NTP server: {}".format(server))
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
-        config.set_tag(['system', 'ntp', 'server'])
+            config.set_tag(['system', 'ntp', 'server'])
 
-    if APIKEY and APIKEY != 'null':
-        config.set(['service', 'https', 'api', 'keys', 'id', 'cloud-init', 'key'], value=APIKEY, replace=True)
+    # Configure API
+    if api_key:
+        logger.debug("Configuring HTTP API key: {}".format(api_key))
+        config.set(['service', 'https', 'api', 'keys', 'id', 'cloud-init', 'key'], value=api_key, replace=True)
         config.set_tag(['service', 'https', 'api', 'keys', 'id'])
-
-    if APIDEBUG != 'False' and APIKEY and APIKEY != 'null':
-        config.set(['service', 'https', 'api', 'debug'], replace=True)
-
-    if APIPORT and APIPORT != 'null' and APIKEY and APIKEY != 'null':
-        config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=APIPORT, replace=True)
+    if api_key and api_port:
+        logger.debug("Configuring HTTP API port: {}".format(api_port))
+        config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=api_port, replace=True)
         config.set_tag(['service', 'https', 'listen-address'])
+    if api_key and api_debug != 'False':
+        logger.debug("Enabling HTTP API debug")
+        config.set(['service', 'https', 'api', 'debug'], replace=True)
 
 
 # get an IP address type
@@ -201,6 +216,7 @@ def set_ipaddress(config, iface, address):
     # configure address
     logger.debug("Configuring IP address {} on interface {}".format(address, iface))
     config.set(['interfaces', 'ethernet', iface, 'address'], value=address, replace=False)
+    config.set_tag(['interfaces', 'ethernet'])
 
 
 # configure interface from networking config version 1
@@ -225,7 +241,6 @@ def set_config_interfaces_v1(config, iface_config):
                     else:
                         set_ipaddress(config, iface_name, 'dhcp')
 
-                    config.set_tag(['interfaces', 'ethernet'])
                     continue
 
                 # configure static options
@@ -248,7 +263,6 @@ def set_config_interfaces_v1(config, iface_config):
                         # apply to the configuration
                         if ip_static_addr:
                             set_ipaddress(config, iface_name, ip_static_addr)
-                            config.set_tag(['interfaces', 'ethernet'])
                     except Exception as err:
                         logger.error("Impossible to configure static IP address: {}".format(err))
 
@@ -328,17 +342,14 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
     if 'dhcp4' in iface_config:
         if iface_config['dhcp4'] is True:
             set_ipaddress(config, iface_name, 'dhcp')
-            config.set_tag(['interfaces', 'ethernet'])
     if 'dhcp6' in iface_config:
         if iface_config['dhcp6'] is True:
             set_ipaddress(config, iface_name, 'dhcpv6')
-            config.set_tag(['interfaces', 'ethernet'])
 
     # configure static addresses
     if 'addresses' in iface_config:
         for item in iface_config['addresses']:
             set_ipaddress(config, iface_name, item)
-            config.set_tag(['interfaces', 'ethernet'])
 
     # configure gateways
     if 'gateway4' in iface_config:
@@ -391,7 +402,6 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
 def set_config_dhcp(config):
     logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
     set_ipaddress(config, 'eth0', 'dhcp')
-    config.set_tag(['interfaces', 'ethernet'])
 
 
 # configure SSH server service
@@ -439,6 +449,10 @@ def handle(name, cfg, cloud, log, _args):
     logger.debug("Users: {}".format(users))
     (default_user, default_user_config) = ug_util.extract_default(users)
     logger.debug("Default user: {}".format(default_user))
+    # Get OVF properties
+    if 'OVF' in dsname:
+        ovf_environment = ovf_get_properties(cloud.datasource.environment)
+        logger.debug("OVF environment: {}".format(ovf_environment))
 
     # VyOS configuration file selection
     cfg_file_name = '/opt/vyatta/etc/config/config.boot'
@@ -486,7 +500,7 @@ def handle(name, cfg, cloud, log, _args):
 
     # apply settings from OVF template
     if 'OVF' in dsname:
-        set_config_ovf(config, metadata_ds)
+        set_config_ovf(config, ovf_environment)
         # Empty hostname option may be interpreted as 'null' string by some hypervisors
         # we need to replace it to the empty value to process it later properly
         if hostname and hostname == 'null':
