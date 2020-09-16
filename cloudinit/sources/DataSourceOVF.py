@@ -436,8 +436,7 @@ def read_ovf_environment(contents):
     cfg = {}
     ud = None
     cfg_props = ['password']
-    md_props = ['seedfrom', 'local-hostname', 'public-keys', 'instance-id',
-                'ip0', 'netmask0', 'gateway', 'DNS', 'NTP', 'APIKEY' ,'APIPORT', 'APIDEBUG']
+    md_props = ['seedfrom', 'local-hostname', 'public-keys', 'instance-id']
     for (prop, val) in props.items():
         if prop == 'hostname':
             prop = "local-hostname"
