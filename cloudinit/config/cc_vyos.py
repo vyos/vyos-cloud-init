@@ -29,7 +29,7 @@ from cloudinit.ssh_util import AuthKeyLineParser
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
 from cloudinit.sources import INSTANCE_JSON_FILE
-from cloudinit.util import load_file, load_json
+from cloudinit.util import load_file, load_json, get_hostname_fqdn
 from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
 from vyos.configtree import ConfigTree
 
@@ -101,7 +101,7 @@ def hostname_filter(hostname):
     filtered_hostname = regex_hostname.search(filtered_characters).group()[:64]
 
     if hostname != filtered_hostname:
-        logger.warning("Hostname was filtered: {} -> {}".format(hostname, filtered_hostname))
+        logger.warning("Hostname/domain was filtered: {} -> {}".format(hostname, filtered_hostname))
     # return safe to apply host-name value
     return filtered_hostname
 
@@ -413,9 +413,17 @@ def set_config_ssh(config):
 
 
 # configure hostname
-def set_config_hostname(config, hostname):
-    logger.debug("Configuring hostname to: {}".format(hostname))
-    config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
+def set_config_hostname(config, hostname, fqdn):
+    if hostname:
+        logger.debug("Configuring hostname to: {}".format(hostname_filter(hostname)))
+        config.set(['system', 'host-name'], value=hostname_filter(hostname), replace=True)
+    if fqdn:
+        try:
+            domain_name = fqdn.partition("{}.".format(hostname))[2]
+            logger.debug("Configuring domain-name to: {}".format(hostname_filter(domain_name)))
+            config.set(['system', 'domain-name'], value=hostname_filter(domain_name), replace=True)
+        except Exception as err:
+            logger.error("Failed to configure domain-name: {}".format(err))
 
 
 # main config handler
@@ -441,9 +449,9 @@ def handle(name, cfg, cloud, log, _args):
     # Network-config
     netcfg = cloud.datasource.network_config
     logger.debug("Network-config: {}".format(netcfg))
-    # Hostname with domain (if exist)
-    hostname = cloud.get_hostname(fqdn=True, metadata_only=True)
-    logger.debug("Hostname: {}".format(hostname))
+    # Hostname with FQDN (if exist)
+    (hostname, fqdn) = get_hostname_fqdn(cfg, cloud, metadata_only=True)
+    logger.debug("Hostname: {}, FQDN: {}".format(hostname, fqdn))
     # Get users list
     (users, _) = ug_util.normalize_users_groups(cfg, cloud.distro)
     logger.debug("Users: {}".format(users))
@@ -529,11 +537,11 @@ def handle(name, cfg, cloud, log, _args):
 
     # enable SSH service
     set_config_ssh(config)
-    # configure hostname
+    # configure hostname and domain
     if hostname:
-        set_config_hostname(config, hostname)
+        set_config_hostname(config, hostname, fqdn)
     else:
-        set_config_hostname(config, 'vyos')
+        set_config_hostname(config, 'vyos', None)
 
     # save a new configuration file
     try:
