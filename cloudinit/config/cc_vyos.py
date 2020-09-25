@@ -29,6 +29,7 @@ from cloudinit.ssh_util import AuthKeyLineParser
 from cloudinit.distros import ug_util
 from cloudinit.settings import PER_INSTANCE
 from cloudinit.sources import INSTANCE_JSON_FILE
+from cloudinit.stages import Init
 from cloudinit.util import load_file, load_json, get_hostname_fqdn
 from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
 from vyos.configtree import ConfigTree
@@ -447,8 +448,10 @@ def handle(name, cfg, cloud, log, _args):
     vendordata = cloud.datasource.vendordata
     logger.debug("Vendor-Data: {}".format(vendordata))
     # Network-config
-    netcfg = cloud.datasource.network_config
+    init_stage = Init()
+    (netcfg, netcfg_src) = init_stage._find_networking_config()
     logger.debug("Network-config: {}".format(netcfg))
+    logger.debug("Network-config source: {}".format(netcfg_src))
     # Hostname with FQDN (if exist)
     (hostname, fqdn) = get_hostname_fqdn(cfg, cloud, metadata_only=True)
     logger.debug("Hostname: {}, FQDN: {}".format(hostname, fqdn))
