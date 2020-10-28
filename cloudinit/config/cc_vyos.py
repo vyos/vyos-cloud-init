@@ -62,6 +62,9 @@ def set_pass_login(config, user, password):
 
     config.set_tag(['system', 'login', 'user'])
 
+    # Return True if credentials added
+    return True
+
 
 # configure user account with ssh key
 def set_ssh_login(config, user, key_string):
@@ -71,11 +74,11 @@ def set_ssh_login(config, user, key_string):
 
     if key_parsed.keytype not in ['ssh-dss', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ssh-ed25519', 'ecdsa-sha2-nistp521']:
         logger.error("Key type {} not supported.".format(key_parsed.keytype))
-        return
+        return False
 
     if not key_parsed.base64:
         logger.error("Key base64 not defined, wrong ssh key format.")
-        return
+        return False
 
     if not key_parsed.comment:
         key_parsed.comment = "cloud-init-{}".format(uuid4())
@@ -87,6 +90,9 @@ def set_ssh_login(config, user, key_string):
     config.set_tag(['system', 'login', 'user'])
     config.set_tag(['system', 'login', 'user', user, 'authentication', 'public-keys'])
     logger.debug("Configured SSH public key for user: {}".format(user))
+
+    # Return True if credentials added
+    return True
 
 
 # filter hostname to be sure that it can be applied
@@ -481,6 +487,9 @@ def handle(name, cfg, cloud, log, _args):
     config = ConfigTree(config_file)
 
     # Initialization of variables
+    DEFAULT_VYOS_USER = 'vyos'
+    DEFAULT_VYOS_PASSWORD = 'vyos'
+    logins_configured = False
     network_configured = False
 
     # configure system logins
@@ -492,22 +501,31 @@ def handle(name, cfg, cloud, log, _args):
     if default_user:
         # key-based
         for ssh_key in ssh_keys:
-            set_ssh_login(config, default_user, ssh_key)
+            if set_ssh_login(config, default_user, ssh_key):
+                logins_configured = True
         # password-based
         password = cfg.get('password')
         if password:
-            set_pass_login(config, default_user, password)
+            if set_pass_login(config, default_user, password):
+                logins_configured = True
 
     # Configure all users accounts
     for user, user_cfg in users.items():
         # Configure password-based authentication
         password = user_cfg.get('passwd')
         if password and password != '':
-            set_pass_login(config, user, password)
+            if set_pass_login(config, user, password):
+                logins_configured = True
 
         # Configure key-based authentication
         for ssh_key in user_cfg.get('ssh_authorized_keys', []):
-            set_ssh_login(config, user, ssh_key)
+            if set_ssh_login(config, user, ssh_key):
+                logins_configured = True
+
+    # Create a fallback user if there was no others
+    if not logins_configured:
+        logger.debug("Adding fallback user: {}".format(DEFAULT_VYOS_USER))
+        set_pass_login(config, DEFAULT_VYOS_USER, DEFAULT_VYOS_PASSWORD)
 
     # apply settings from OVF template
     if 'OVF' in dsname:
