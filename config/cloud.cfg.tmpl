@@ -1,36 +1,44 @@
-## template:jinja
-# The top level settings are used as module
-# and system configuration.
+# This will cause the set+update hostname module to not operate (if true)
+preserve_hostname: true
 
+# Do not change SSH password-based authentication settings
+ssh_pwauth: unchanged
+
+# Configuring Azure datasource
 datasource:
   Azure:
     agent_command: [/usr/bin/python3, -u, /usr/sbin/waagent, -start]
 
-# This will cause the set+update hostname module to not operate (if true)
-preserve_hostname: true
+# disable customization for VMware
+disable_vmware_customization: true
 
-users:
-   - default
+# The modules that run in the 'init' stage
+cloud_init_modules:
 
 # The modules that run in the 'config' stage
 cloud_config_modules:
- - vyos
+  - vyos
+  - write_files
+  - vyos_userdata
 
 # The modules that run in the 'final' stage
 cloud_final_modules:
- - runcmd
 
+# Users, necessary for Cloud-init 18.4
+users:
+  - default
 
 # System and/or distro specific settings
 # (not accessible to handlers/transforms)
 system_info:
-   # This will affect which distro class gets used
-   distro: debian
-   # Default user name + that default users groups (if added/used)
-   default_user:
-     name: vyos
-   # Other config here will be given to the distro class and/or path classes
-   paths:
-      cloud_dir: /opt/vyatta/etc/config/cloud/
-      templates_dir: /etc/cloud/templates/
-      upstart_dir: /etc/init/
+  # This will affect which distro class gets used
+  distro: debian
+  # Default user name + that default users groups (if added/used)
+  default_user:
+    name: vyos
+  # Other config here will be given to the distro class and/or path classes
+  paths:
+    cloud_dir: /opt/vyatta/etc/config/cloud/
+    templates_dir: /etc/cloud/templates/
+    upstart_dir: /etc/init/
+
