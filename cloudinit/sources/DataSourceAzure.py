@@ -13,7 +13,6 @@ import os
 import os.path
 import re
 from time import time
-from subprocess import call
 from xml.dom import minidom
 import xml.etree.ElementTree as ET
 
@@ -269,11 +268,6 @@ class DataSourceAzure(sources.DataSource):
     dsname = 'Azure'
     _negotiated = False
     _metadata_imds = sources.UNSET
-    process_name = 'dhclient'
-
-    tmpps = os.popen("ps -Af").read()
-    if process_name not in tmpps[:]:
-        call(['/sbin/dhclient', DEFAULT_PRIMARY_NIC])
 
     def __init__(self, sys_cfg, distro, paths):
         sources.DataSource.__init__(self, sys_cfg, distro, paths)
