@@ -454,8 +454,12 @@ def handle(name, cfg, cloud, log, _args):
     vendordata = cloud.datasource.vendordata
     logger.debug("Vendor-Data: {}".format(vendordata))
     # Network-config
-    init_stage = Init()
-    (netcfg, netcfg_src) = init_stage._find_networking_config()
+    netcfg = cloud.datasource.network_config
+    if netcfg:
+        netcfg_src = dsname
+    else:
+        init_stage = Init()
+        (netcfg, netcfg_src) = init_stage._find_networking_config()
     logger.debug("Network-config: {}".format(netcfg))
     logger.debug("Network-config source: {}".format(netcfg_src))
     # Hostname with FQDN (if exist)
