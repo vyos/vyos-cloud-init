@@ -232,6 +232,13 @@ def set_config_interfaces_v1(config, iface_config):
     # configure physical interfaces
     if iface_config['type'] == 'physical':
         iface_name = iface_config['name']
+
+        # configre MAC
+        if 'mac_address' in iface_config:
+            logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['mac_address']))
+            config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['mac_address'], replace=True)
+            config.set_tag(['interfaces', 'ethernet'])
+
         # configre MTU
         if 'mtu' in iface_config:
             logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
@@ -345,6 +352,13 @@ def set_config_interfaces_v1(config, iface_config):
 # configure interface from networking config version 2
 def set_config_interfaces_v2(config, iface_name, iface_config):
     logger.debug("Configuring network using Cloud-init networking config version 2")
+
+    # configure MAC
+    if 'match' in iface_config and 'macaddress' in iface_config['match']:
+        logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['match']['macaddress']))
+        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['match']['macaddress'], replace=True)
+        config.set_tag(['interfaces', 'ethernet'])
+
     # configure DHCP client
     if 'dhcp4' in iface_config:
         if iface_config['dhcp4'] is True:
@@ -370,7 +384,7 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
         config.set_tag(['protocols', 'static', 'route6'])
         config.set_tag(['protocols', 'static', 'route6', '::/0', 'next-hop'])
 
-    # configre MTU
+    # configure MTU
     if 'mtu' in iface_config:
         logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
         config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
