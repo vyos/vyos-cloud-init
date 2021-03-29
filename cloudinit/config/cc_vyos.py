@@ -427,8 +427,9 @@ def set_config_hostname(config, hostname, fqdn):
     if fqdn:
         try:
             domain_name = fqdn.partition("{}.".format(hostname))[2]
-            logger.debug("Configuring domain-name to: {}".format(hostname_filter(domain_name)))
-            config.set(['system', 'domain-name'], value=hostname_filter(domain_name), replace=True)
+            if domain_name:
+                logger.debug("Configuring domain-name to: {}".format(hostname_filter(domain_name)))
+                config.set(['system', 'domain-name'], value=hostname_filter(domain_name), replace=True)
         except Exception as err:
             logger.error("Failed to configure domain-name: {}".format(err))
 
