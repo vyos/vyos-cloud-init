@@ -496,10 +496,9 @@ def handle(name, cfg, cloud, log, _args):
     # configure system logins
     # Prepare SSH public keys for default user, to be sure that global keys applied to the default account (if it exist)
     ssh_keys = metadata_v1['public_ssh_keys']
-    # append SSH keys from metadata_ds
-    ds_keys = metadata_ds.get('public-keys')
-    if ds_keys:
-        ssh_keys.extend([ key for key in metadata_ds['public-keys'] ])
+    # Cloud-init before the 20.4 version is not able to fetch SSH public keys from Azure properly, so we need to add them manually
+    if 'Azure' in dsname:
+        ssh_keys.extend(metadata_ds.get('public-keys', []))
     # append SSH keys from cloud-config
     ssh_keys.extend(cfg.get('ssh_authorized_keys', []))
     # Configure authentication for default user account
