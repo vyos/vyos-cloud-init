@@ -157,6 +157,7 @@ def set_config_ovf(config, ovf_environment):
     # Configure NTP servers
     if ntp_string:
         ntp_list = list(ntp_string.replace(' ', '').split(','))
+        config.delete(['system', 'ntp'])
         for server in ntp_list:
             logger.debug("Configuring NTP server: {}".format(server))
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
