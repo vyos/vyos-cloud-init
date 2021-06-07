@@ -307,7 +307,7 @@ def set_config_interfaces_v1(config, iface_config):
                     if 'dns_search' in subnet:
                         for item in subnet['dns_search']:
                             logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                            config.set(['system', 'domain-search'], value=item, replace=False)
+                            config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
 
     # configure nameservers
     if iface_config['type'] == 'nameserver':
@@ -318,7 +318,7 @@ def set_config_interfaces_v1(config, iface_config):
         if 'search' in iface_config:
             for item in iface_config['search']:
                 logger.debug("Configuring DNS search domain: {}".format(item))
-                config.set(['system', 'domain-search'], value=item, replace=False)
+                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
 
     # configure routes
     if iface_config['type'] == 'route':
@@ -398,7 +398,7 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
         if 'search' in iface_config['nameservers']:
             for item in iface_config['nameservers']['search']:
                 logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                config.set(['system', 'domain-search'], value=item, replace=False)
+                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
         if 'addresses' in iface_config['nameservers']:
             for item in iface_config['nameservers']['addresses']:
                 logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
