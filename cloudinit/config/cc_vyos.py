@@ -514,6 +514,8 @@ def handle(name, cfg, cloud, log, _args):
 
     # configure system logins
     # Prepare SSH public keys for default user, to be sure that global keys applied to the default account (if it exist)
+    # If the ssh key is left emty on an OVA deploy the OVF datastore passes an empty string which generates an invalid key error. 
+    # Set the ssh_keys variable from the metadata_v1['public_ssh_keys'] checked for empty strings.
     ssh_keys = [key for key in metadata_v1['public_ssh_keys'] if key ]
     # append SSH keys from cloud-config
     ssh_keys.extend(cfg.get('ssh_authorized_keys', []))
