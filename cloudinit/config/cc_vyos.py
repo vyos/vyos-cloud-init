@@ -157,6 +157,7 @@ def set_config_ovf(config, ovf_environment):
     # Configure NTP servers
     if ntp_string:
         ntp_list = list(ntp_string.replace(' ', '').split(','))
+        config.delete(['system', 'ntp'])
         for server in ntp_list:
             logger.debug("Configuring NTP server: {}".format(server))
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
@@ -314,7 +315,7 @@ def set_config_interfaces_v1(config, iface_config):
                     if 'dns_search' in subnet:
                         for item in subnet['dns_search']:
                             logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                            config.set(['system', 'domain-search'], value=item, replace=False)
+                            config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
 
     # configure nameservers
     if iface_config['type'] == 'nameserver':
@@ -325,7 +326,7 @@ def set_config_interfaces_v1(config, iface_config):
         if 'search' in iface_config:
             for item in iface_config['search']:
                 logger.debug("Configuring DNS search domain: {}".format(item))
-                config.set(['system', 'domain-search'], value=item, replace=False)
+                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
 
     # configure routes
     if iface_config['type'] == 'route':
@@ -412,7 +413,7 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
         if 'search' in iface_config['nameservers']:
             for item in iface_config['nameservers']['search']:
                 logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                config.set(['system', 'domain-search'], value=item, replace=False)
+                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
         if 'addresses' in iface_config['nameservers']:
             for item in iface_config['nameservers']['addresses']:
                 logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
@@ -513,7 +514,9 @@ def handle(name, cfg, cloud, log, _args):
 
     # configure system logins
     # Prepare SSH public keys for default user, to be sure that global keys applied to the default account (if it exist)
-    ssh_keys = metadata_v1['public_ssh_keys']
+    # If the ssh key is left emty on an OVA deploy the OVF datastore passes an empty string which generates an invalid key error. 
+    # Set the ssh_keys variable from the metadata_v1['public_ssh_keys'] checked for empty strings.
+    ssh_keys = [key for key in metadata_v1['public_ssh_keys'] if key ]
     # append SSH keys from cloud-config
     ssh_keys.extend(cfg.get('ssh_authorized_keys', []))
     # Configure authentication for default user account
