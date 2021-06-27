@@ -135,7 +135,7 @@ def set_config_ovf(config, ovf_environment):
 
     # Configure an interface and default route
     if ip_address and ip_mask and gateway:
-        ip_address_cidr = ipaddress.ip_interface("{}/{}".format(ip_address, ip_mask)).with_prefixlen
+        ip_address_cidr = ipaddress.ip_interface("{}/{}".format(ip_address, ip_mask.replace('/', ''))).with_prefixlen
         logger.debug("Configuring the IP address on the eth0 interface: {}".format(ip_address_cidr))
         set_ipaddress(config, 'eth0', ip_address_cidr)
 
