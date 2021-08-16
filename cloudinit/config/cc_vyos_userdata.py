@@ -57,7 +57,7 @@ def get_multi_nodes():
         # search for node.def files
         node_def_files = Path(TEMPLATES_DIR).rglob('node.def')
         # prepare filter to match multi node files
-        regex_filter = re.compile(r'^multi:$', re.MULTILINE)
+        regex_filter = re.compile(r'^multi:.*$', re.MULTILINE)
         # add each node.def with multi mark to list
         for node_def_file in node_def_files:
             file_content = node_def_file.open().read()
