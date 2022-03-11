@@ -22,7 +22,8 @@
 
 import re
 import ipaddress
-from os import path
+from pathlib import Path
+from subprocess import run, DEVNULL
 from uuid import uuid4
 from cloudinit import log as logging
 from cloudinit.ssh_util import AuthKeyLineParser
@@ -449,6 +450,28 @@ def set_config_hostname(config, hostname, fqdn):
             logger.error("Failed to configure domain-name: {}".format(err))
 
 
+# cleanup network interface config file added by cloud-init
+def network_cleanup():
+    logger.debug("Cleaning up network configuration applied by Cloud-Init")
+    net_config_file = Path('/etc/network/interfaces.d/50-cloud-init')
+    if net_config_file.exists():
+        logger.debug(f"Configuration file {net_config_file} was found")
+        try:
+            # get a list of interfaces that need to be deconfigured
+            configured_ifaces = run(
+                ['ifquery', '-l', '-X', 'lo', '-i', net_config_file],
+                capture_output=True).stdout.decode().splitlines()
+            if configured_ifaces:
+                for iface in configured_ifaces:
+                    logger.debug(f"Deconfiguring interface: {iface}")
+                    run(['ifdown', iface], stdout=DEVNULL)
+            # delete the file
+            net_config_file.unlink()
+            logger.debug(f"Configuration file {net_config_file} was removed")
+        except Exception as err:
+            logger.error(f"Failed to cleanup network configuration: {err}")
+
+
 # main config handler
 def handle(name, cfg, cloud, log, _args):
     logger.debug("Cloud-init config: {}".format(cfg))
@@ -496,7 +519,7 @@ def handle(name, cfg, cloud, log, _args):
     bak_file_name = '/opt/vyatta/etc/config.boot.default'
 
     # open configuration file
-    if not path.exists(cfg_file_name):
+    if not Path(cfg_file_name).exists:
         file_name = bak_file_name
     else:
         file_name = cfg_file_name
@@ -514,9 +537,9 @@ def handle(name, cfg, cloud, log, _args):
 
     # configure system logins
     # Prepare SSH public keys for default user, to be sure that global keys applied to the default account (if it exist)
-    # If the ssh key is left emty on an OVA deploy the OVF datastore passes an empty string which generates an invalid key error. 
+    # If the ssh key is left emty on an OVA deploy the OVF datastore passes an empty string which generates an invalid key error.
     # Set the ssh_keys variable from the metadata_v1['public_ssh_keys'] checked for empty strings.
-    ssh_keys = [key for key in metadata_v1['public_ssh_keys'] if key ]
+    ssh_keys = [key for key in metadata_v1['public_ssh_keys'] if key]
     # append SSH keys from cloud-config
     ssh_keys.extend(cfg.get('ssh_authorized_keys', []))
     # Configure authentication for default user account
@@ -593,3 +616,6 @@ def handle(name, cfg, cloud, log, _args):
             logger.debug("Configuration file saved: {}".format(cfg_file_name))
     except Exception as e:
         logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
+
+    # since we already have a config file, it is a time to clean up what Cloud-init may left
+    network_cleanup()
