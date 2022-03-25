@@ -18,7 +18,10 @@ import re
 from pathlib import Path
 from cloudinit import log as logging
 from cloudinit.settings import PER_INSTANCE
-from vyos.configtree import ConfigTree
+try:
+    from vyos.configtree import ConfigTree
+except ImportError as err:
+    print(f'The module cannot be imported: {err}')
 
 # configure logging
 logger = logging.getLogger(__name__)

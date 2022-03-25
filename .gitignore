@@ -5,6 +5,7 @@ dist
 __pycache__
 .tox
 .coverage
+.python-version
 doc/rtd_html
 parts
 prime
@@ -16,6 +17,10 @@ stage
 .pc/
 .cache/
 .mypy_cache/
+.pytest_cache/
+.vscode/
+htmlcov/
+tags
 
 # Ignore packaging artifacts
 cloud-init.dsc

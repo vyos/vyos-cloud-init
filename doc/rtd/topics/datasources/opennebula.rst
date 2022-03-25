@@ -69,13 +69,21 @@ Datasource mode configuration override. Values: local, net, disabled.
     ETH<x>_NETWORK
     ETH<x>_MASK
     ETH<x>_GATEWAY
+    ETH<x>_GATEWAY6
     ETH<x>_DOMAIN
     ETH<x>_DNS
+    ETH<x>_SEARCH_DOMAIN
+    ETH<x>_MTU
+    ETH<x>_IP6
+    ETH<x>_IP6_ULA
+    ETH<x>_IP6_PREFIX_LENGTH
+    ETH<x>_IP6_GATEWAY
 
 Static `network configuration`_.
 
 ::
 
+    SET_HOSTNAME
     HOSTNAME
 
 Instance hostname.
@@ -145,4 +153,4 @@ Example VM's context section
 .. _contextualizing VMs: http://opennebula.org/documentation:documentation:cong
 .. _network configuration: http://opennebula.org/documentation:documentation:cong#network_configuration
 .. _iso9660: https://en.wikipedia.org/wiki/ISO_9660
-.. vi: textwidth=78
+.. vi: textwidth=79
