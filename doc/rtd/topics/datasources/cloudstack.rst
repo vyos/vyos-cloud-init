@@ -46,11 +46,9 @@ An example configuration with the default values is provided below:
     CloudStack:
       max_wait: 120
       timeout: 50
-      datasource_list:
-        - CloudStack
 
 
 .. _Apache CloudStack: http://cloudstack.apache.org/
 .. _CloudStack Administrator Guide: http://docs.cloudstack.apache.org/projects/cloudstack-administration/en/latest/virtual_machines.html#user-data-and-meta-data
 
-.. vi: textwidth=78
+.. vi: textwidth=79

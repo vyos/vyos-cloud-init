@@ -50,7 +50,9 @@ These user-data and meta-data files are expected to be in the following format.
   /user-data
   /meta-data
 
-Basically, user-data is simply user-data and meta-data is a yaml formatted file
+Both files are required to be present for it to be considered a valid seed ISO.
+
+Basically, user-data is simply user-data and meta-data is a YAML formatted file
 representing what you'd find in the EC2 metadata service.
 
 You may also optionally provide a vendor-data file in the following format.
@@ -113,11 +115,11 @@ Example metadata:
 
 Network configuration can also be provided to cloud-init in either
 :ref:`network_config_v1` or :ref:`network_config_v2` by providing that
-yaml formatted data in a file named ``network-config``.  If found,
+YAML formatted data in a file named ``network-config``.  If found,
 this file will override a ``network-interfaces`` file.
 
 See an example below.  Note specifically that this file does not
-have a top level ``network`` key as it it is already assumed to
+have a top level ``network`` key as it is already assumed to
 be network configuration based on the filename.
 
 .. code:: yaml
@@ -149,4 +151,4 @@ be network configuration based on the filename.
 
 .. _iso9660: https://en.wikipedia.org/wiki/ISO_9660
 .. _vfat: https://en.wikipedia.org/wiki/File_Allocation_Table
-.. vi: textwidth=78
+.. vi: textwidth=79

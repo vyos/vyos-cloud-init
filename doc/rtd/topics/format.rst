@@ -23,9 +23,11 @@ Using a mime-multi part file, the user can specify more than one type of data.
 For example, both a user data script and a cloud-config type could be
 specified.
 
-Supported content-types are listed from the cloud-init subcommand make-mime::
+Supported content-types are listed from the cloud-init subcommand make-mime:
 
-    % cloud-init devel make-mime --list-types
+.. code-block:: shell-session
+
+    $ cloud-init devel make-mime --list-types
     cloud-boothook
     cloud-config
     cloud-config-archive
@@ -36,6 +38,9 @@ Supported content-types are listed from the cloud-init subcommand make-mime::
     x-include-once-url
     x-include-url
     x-shellscript
+    x-shellscript-per-boot
+    x-shellscript-per-instance
+    x-shellscript-per-once
 
 
 Helper subcommand to generate mime messages
@@ -45,13 +50,28 @@ The cloud-init subcommand can generate MIME multi-part files: `make-mime`_.
 
 ``make-mime`` subcommand takes pairs of (filename, "text/" mime subtype)
 separated by a colon (e.g. ``config.yaml:cloud-config``) and emits a MIME
-multipart message to stdout.  An example invocation, assuming you have your
-cloud config in ``config.yaml`` and a shell script in ``script.sh`` and want
-to store the multipart message in ``user-data``::
+multipart message to stdout.
 
-    % cloud-init devel make-mime -a config.yaml:cloud-config -a script.sh:x-shellscript > user-data
+Examples
+--------
+Create userdata containing both a cloud-config (``config.yaml``)
+and a shell script (``script.sh``)
 
-.. _make-mime: https://github.com/canonical/cloud-init/blob/master/cloudinit/cmd/devel/make_mime.py
+.. code-block:: shell-session
+
+    $ cloud-init devel make-mime -a config.yaml:cloud-config -a script.sh:x-shellscript > userdata
+
+Create userdata containing 3 shell scripts:
+
+- ``always.sh`` - Run every boot
+- ``instance.sh`` - Run once per instance
+- ``once.sh`` - Run once
+
+.. code-block:: shell-session
+
+    $ cloud-init devel make-mime -a always.sh:x-shellscript-per-boot -a instance.sh:x-shellscript-per-instance -a once.sh:x-shellscript-per-once
+
+.. _make-mime: https://github.com/canonical/cloud-init/blob/main/cloudinit/cmd/devel/make_mime.py
 
 
 User-Data Script
@@ -70,7 +90,7 @@ archive.
 Example
 -------
 
-::
+.. code-block:: shell-session
 
   $ cat myscript.sh
 
@@ -85,7 +105,7 @@ Include File
 This content is a ``include`` file.
 
 The file contains a list of urls, one per line. Each of the URLs will be read,
-and their content will be passed through this same set of rules. Ie, the
+and their content will be passed through this same set of rules. I.e., the
 content read from the URL can be gzipped, mime-multi-part, or plain text. If
 an error occurs reading a file the remaining files will not be read.
 
@@ -108,7 +128,7 @@ These things include:
 - *and many more...*
 
 .. note::
-   This file must be valid yaml syntax.
+   This file must be valid YAML syntax.
 
 See the :ref:`yaml_examples` section for a commented set of examples of
 supported cloud config formats.
@@ -205,4 +225,4 @@ cloud-init from processing user-data.
 .. [#] See your cloud provider for applicable user-data size limitations...
 .. _blog: http://foss-boss.blogspot.com/2011/01/advanced-cloud-init-custom-handlers.html
 
-.. vi: textwidth=78
+.. vi: textwidth=79

@@ -24,15 +24,19 @@ Configuration for this module is under the ``random_seed`` config key. The
 optionally be specified in encoded form, with the encoding specified in
 ``encoding``.
 
+If the cloud provides its own random seed data, it will be appended to ``data``
+before it is written to ``file``.
+
 .. note::
     when using a multiline value for ``data`` or specifying binary data, be
     sure to follow yaml syntax and use the ``|`` and ``!binary`` yaml format
     specifiers when appropriate
 
-Instead of specifying a data string, a command can be run to generate/collect
-the data to be written. The command should be specified as a list of args in
-the ``command`` key. If a command is specified that cannot be run, no error
-will be reported unless ``command_required`` is set to true.
+If the ``command`` key is specified, the given command will be executed.  This
+will happen after ``file`` has been populated.  That command's environment will
+contain the value of the ``file`` key as ``RANDOM_SEED_FILE``. If a command is
+specified that cannot be run, no error will be reported unless
+``command_required`` is set to true.
 
 For example, to use ``pollinate`` to gather data from a
 remote entropy server and write it to ``/dev/urandom``, the following could be
@@ -64,9 +68,8 @@ import os
 from io import BytesIO
 
 from cloudinit import log as logging
+from cloudinit import subp, util
 from cloudinit.settings import PER_INSTANCE
-from cloudinit import subp
-from cloudinit import util
 
 frequency = PER_INSTANCE
 LOG = logging.getLogger(__name__)
@@ -74,12 +77,12 @@ LOG = logging.getLogger(__name__)
 
 def _decode(data, encoding=None):
     if not data:
-        return b''
-    if not encoding or encoding.lower() in ['raw']:
+        return b""
+    if not encoding or encoding.lower() in ["raw"]:
         return util.encode_text(data)
-    elif encoding.lower() in ['base64', 'b64']:
+    elif encoding.lower() in ["base64", "b64"]:
         return base64.b64decode(data)
-    elif encoding.lower() in ['gzip', 'gz']:
+    elif encoding.lower() in ["gzip", "gz"]:
         return util.decomp_gzip(data, quiet=False, decode=None)
     else:
         raise IOError("Unknown random_seed encoding: %s" % (encoding))
@@ -96,7 +99,8 @@ def handle_random_seed_command(command, required, env=None):
     if not subp.which(cmd):
         if required:
             raise ValueError(
-                "command '{cmd}' not found but required=true".format(cmd=cmd))
+                "command '{cmd}' not found but required=true".format(cmd=cmd)
+            )
         else:
             LOG.debug("command '%s' not found for seed_command", cmd)
             return
@@ -104,34 +108,39 @@ def handle_random_seed_command(command, required, env=None):
 
 
 def handle(name, cfg, cloud, log, _args):
-    mycfg = cfg.get('random_seed', {})
-    seed_path = mycfg.get('file', '/dev/urandom')
-    seed_data = mycfg.get('data', b'')
+    mycfg = cfg.get("random_seed", {})
+    seed_path = mycfg.get("file", "/dev/urandom")
+    seed_data = mycfg.get("data", b"")
 
     seed_buf = BytesIO()
     if seed_data:
-        seed_buf.write(_decode(seed_data, encoding=mycfg.get('encoding')))
+        seed_buf.write(_decode(seed_data, encoding=mycfg.get("encoding")))
 
     # 'random_seed' is set up by Azure datasource, and comes already in
     # openstack meta_data.json
     metadata = cloud.datasource.metadata
-    if metadata and 'random_seed' in metadata:
-        seed_buf.write(util.encode_text(metadata['random_seed']))
+    if metadata and "random_seed" in metadata:
+        seed_buf.write(util.encode_text(metadata["random_seed"]))
 
     seed_data = seed_buf.getvalue()
     if len(seed_data):
-        log.debug("%s: adding %s bytes of random seed entropy to %s", name,
-                  len(seed_data), seed_path)
+        log.debug(
+            "%s: adding %s bytes of random seed entropy to %s",
+            name,
+            len(seed_data),
+            seed_path,
+        )
         util.append_file(seed_path, seed_data)
 
-    command = mycfg.get('command', None)
-    req = mycfg.get('command_required', False)
+    command = mycfg.get("command", None)
+    req = mycfg.get("command_required", False)
     try:
         env = os.environ.copy()
-        env['RANDOM_SEED_FILE'] = seed_path
+        env["RANDOM_SEED_FILE"] = seed_path
         handle_random_seed_command(command=command, required=req, env=env)
     except ValueError as e:
         log.warning("handling random command [%s] failed: %s", command, e)
         raise e
+
 
 # vi: ts=4 expandtab

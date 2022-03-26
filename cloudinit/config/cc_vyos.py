@@ -33,7 +33,10 @@ from cloudinit.sources import INSTANCE_JSON_FILE
 from cloudinit.stages import Init
 from cloudinit.util import load_file, load_json, get_hostname_fqdn
 from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
-from vyos.configtree import ConfigTree
+try:
+    from vyos.configtree import ConfigTree
+except ImportError as err:
+    print(f'The module cannot be imported: {err}')
 
 # configure logging
 logger = logging.getLogger(__name__)
