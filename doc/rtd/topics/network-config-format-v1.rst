@@ -48,7 +48,7 @@ the key ``subnets``.
 Physical
 ~~~~~~~~
 The ``physical`` type configuration represents a "physical" network device,
-typically Ethernet-based.  At least one of of these entries is required for
+typically Ethernet-based.  At least one of these entries is required for
 external network connectivity.  Type ``physical`` requires only one key:
 ``name``.  A ``physical`` device may contain some or all of the following
 keys:
@@ -62,7 +62,8 @@ structure.
 **mac_address**: *<MAC Address>*
 
 The MAC Address is a device unique identifier that most Ethernet-based network
-devices possess.  Specifying a MAC Address is optional.
+devices possess. Specifying a MAC Address is optional.
+Letters must be lowercase.
 
 .. note::
 
@@ -334,7 +335,11 @@ Users can specify a ``nameserver`` type.  Nameserver dictionaries include
 the following keys:
 
 - ``address``: List of IPv4 or IPv6 address of nameservers.
-- ``search``: List of of hostnames to include in the resolv.conf search path.
+- ``search``: List of hostnames to include in the resolv.conf search path.
+- ``interface``: Optional. Ties the nameserver definition to the specified
+  interface. The value specified here must match the `name` of an interface
+  defined in this config. If unspecified, this nameserver will be considered
+  a global nameserver.
 
 **Nameserver Example**::
 
@@ -349,6 +354,7 @@ the following keys:
              address: 192.168.23.14/27
              gateway: 192.168.23.1
       - type: nameserver
+        interface: interface0  # Ties nameserver to interface0 only
         address:
           - 192.168.23.2
           - 8.8.8.8
@@ -414,9 +420,19 @@ Subnet types are one of the following:
 - ``dhcp6``: Configure this interface with IPv6 dhcp.
 - ``static``: Configure this interface with a static IPv4.
 - ``static6``: Configure this interface with a static IPv6 .
+- ``ipv6_dhcpv6-stateful``: Configure this interface with ``dhcp6``
+- ``ipv6_dhcpv6-stateless``: Configure this interface with SLAAC and DHCP
+- ``ipv6_slaac``: Configure address with SLAAC
 
-When making use of ``dhcp`` types, no additional configuration is needed in
-the subnet dictionary.
+When making use of ``dhcp`` or either of the ``ipv6_dhcpv6`` types,
+no additional configuration is needed in the subnet dictionary.
+
+Using ``ipv6_dhcpv6-stateless`` or ``ipv6_slaac`` allows the IPv6 address to be
+automatically configured with StateLess Address AutoConfiguration (`SLAAC`_).
+SLAAC requires support from the network, so verify that your cloud or network
+offering has support before trying it out. With ``ipv6_dhcpv6-stateless``,
+DHCPv6 is still used to fetch other subnet details such as gateway or DNS
+servers. If you only want to discover the address, use ``ipv6_slaac``.
 
 
 **Subnet DHCP Example**::
@@ -603,4 +619,6 @@ Some more examples to explore the various options available.
       - dellstack
       type: nameserver
 
-.. vi: textwidth=78
+.. _SLAAC: https://tools.ietf.org/html/rfc4862
+
+.. vi: textwidth=79

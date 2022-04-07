@@ -33,7 +33,10 @@ from cloudinit.sources import INSTANCE_JSON_FILE
 from cloudinit.stages import Init
 from cloudinit.util import load_file, load_json, get_hostname_fqdn
 from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
-from vyos.configtree import ConfigTree
+try:
+    from vyos.configtree import ConfigTree
+except ImportError as err:
+    print(f'The module cannot be imported: {err}')
 
 # configure logging
 logger = logging.getLogger(__name__)
@@ -158,6 +161,7 @@ def set_config_ovf(config, ovf_environment):
     # Configure NTP servers
     if ntp_string:
         ntp_list = list(ntp_string.replace(' ', '').split(','))
+        config.delete(['system', 'ntp'])
         for server in ntp_list:
             logger.debug("Configuring NTP server: {}".format(server))
             config.set(['system', 'ntp', 'server'], value=server, replace=False)
@@ -233,6 +237,13 @@ def set_config_interfaces_v1(config, iface_config):
     # configure physical interfaces
     if iface_config['type'] == 'physical':
         iface_name = iface_config['name']
+
+        # configre MAC
+        if 'mac_address' in iface_config:
+            logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['mac_address']))
+            config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['mac_address'], replace=True)
+            config.set_tag(['interfaces', 'ethernet'])
+
         # configre MTU
         if 'mtu' in iface_config:
             logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
@@ -346,6 +357,13 @@ def set_config_interfaces_v1(config, iface_config):
 # configure interface from networking config version 2
 def set_config_interfaces_v2(config, iface_name, iface_config):
     logger.debug("Configuring network using Cloud-init networking config version 2")
+
+    # configure MAC
+    if 'match' in iface_config and 'macaddress' in iface_config['match']:
+        logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['match']['macaddress']))
+        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['match']['macaddress'], replace=True)
+        config.set_tag(['interfaces', 'ethernet'])
+
     # configure DHCP client
     if 'dhcp4' in iface_config:
         if iface_config['dhcp4'] is True:
@@ -371,7 +389,7 @@ def set_config_interfaces_v2(config, iface_name, iface_config):
         config.set_tag(['protocols', 'static', 'route6'])
         config.set_tag(['protocols', 'static', 'route6', '::/0', 'next-hop'])
 
-    # configre MTU
+    # configure MTU
     if 'mtu' in iface_config:
         logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
         config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
@@ -478,8 +496,12 @@ def handle(name, cfg, cloud, log, _args):
     vendordata = cloud.datasource.vendordata
     logger.debug("Vendor-Data: {}".format(vendordata))
     # Network-config
-    init_stage = Init()
-    (netcfg, netcfg_src) = init_stage._find_networking_config()
+    netcfg = cloud.datasource.network_config
+    if netcfg:
+        netcfg_src = dsname
+    else:
+        init_stage = Init()
+        (netcfg, netcfg_src) = init_stage._find_networking_config()
     logger.debug("Network-config: {}".format(netcfg))
     logger.debug("Network-config source: {}".format(netcfg_src))
     # Hostname with FQDN (if exist)

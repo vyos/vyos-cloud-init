@@ -47,8 +47,8 @@ way as user-data.
 
 The only differences are:
 
- * user-scripts are stored in a different location than user-scripts (to
-   avoid namespace collision)
+ * vendor-data-defined scripts are stored in a different location than
+   user-data-defined scripts (to avoid namespace collision)
  * user can disable part handlers by cloud-config settings.
    For example, to disable handling of 'part-handlers' in vendor-data,
    the user could provide user-data like this:
@@ -68,4 +68,4 @@ of input files.  That data can then be given to an instance.
 
 See 'write-mime-multipart --help' for usage.
 
-.. vi: textwidth=78
+.. vi: textwidth=79
