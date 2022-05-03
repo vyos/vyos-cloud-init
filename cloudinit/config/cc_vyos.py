@@ -502,6 +502,12 @@ def handle(name, cfg, cloud, log, _args):
     else:
         init_stage = Init()
         (netcfg, netcfg_src) = init_stage._find_networking_config()
+    # Depending on Network-config version (and maybe something else)
+    # Cloud-init may provide output here in different formats. That
+    # is why we need to add this additional validation and conversion
+    # to what we expect to see in the end. Most likely, the reason is
+    # in: https://bugs.launchpad.net/cloud-init/+bug/1906187
+    netcfg = netcfg.get('network', netcfg)
     logger.debug("Network-config: {}".format(netcfg))
     logger.debug("Network-config source: {}".format(netcfg_src))
     # Hostname with FQDN (if exist)
