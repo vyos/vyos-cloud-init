@@ -141,13 +141,13 @@ def set_config_ovf(config, ovf_environment):
     if ip_address and ip_mask and gateway:
         ip_address_cidr = ipaddress.ip_interface("{}/{}".format(ip_address, ip_mask.replace('/', ''))).with_prefixlen
         logger.debug("Configuring the IP address on the eth0 interface: {}".format(ip_address_cidr))
-        set_ipaddress(config, 'ethernet', 'eth0', ip_address_cidr)
+        set_ipaddress(config, 'ethernet', 'eth0', ip_address_cidr, 0)
 
         logger.debug("Configuring default route via: {}".format(gateway))
         set_ip_route(config, 4, '0.0.0.0/0', gateway, True)
     else:
         logger.debug("Configuring a DHCP client on the eth0 interface (fallback from OVF)")
-        set_ipaddress(config, 'ethernet', 'eth0', 'dhcp')
+        set_ipaddress(config, 'ethernet', 'eth0', 'dhcp', 0)
 
     # Configure DNS servers
     if dns_string:
