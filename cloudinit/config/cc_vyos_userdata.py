@@ -134,10 +134,12 @@ def mark_tag(config, node_path, tag_nodes):
 # apply "set" command
 def apply_command_set(config, tag_nodes, multi_nodes, command):
     # if a node is multi type add value instead replacing
-    replace_option = not inside_nodes_list(command['cmd_path'], multi_nodes)
+    replace_option = not inside_nodes_list(command['cmd_path'],
+                                           multi_nodes + tag_nodes)
     if not replace_option:
-        logger.debug("{} is a multi node, adding value".format(
-            command['cmd_path']))
+        logger.debug(
+            "{} is a multi or tag node, adding value instead overwriting".
+            format(command['cmd_path']))
 
     config.set(command['cmd_path'],
                command['cmd_value'],
