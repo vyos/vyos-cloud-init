@@ -103,18 +103,22 @@ def set_ssh_login(config, user, key_string):
 # NOTE: here we cannot attempt to deny anything prohibited, as it is too late.
 # Therefore, we need only pass what is allowed, cutting everything else
 def hostname_filter(hostname):
+    # fallback to default hostname if provided name is completely unusable
+    resulted_hostname = 'vyos'
     # define regex for alloweed characters and resulted hostname
     regex_characters = re.compile(r'[a-z0-9.-]', re.IGNORECASE)
     regex_hostname = re.compile(r'[a-z0-9](([a-z0-9-]\.|[a-z0-9-])*[a-z0-9])?', re.IGNORECASE)
     # filter characters
     filtered_characters = ''.join(regex_characters.findall(hostname))
     # check that hostname start and end by allowed characters and cut unsupported ones, limit to 64 characters total
-    filtered_hostname = regex_hostname.search(filtered_characters).group()[:64]
+    filtered_hostname = regex_hostname.search(filtered_characters)
+    if filtered_hostname:
+        resulted_hostname = filtered_hostname.group()[:64]
 
-    if hostname != filtered_hostname:
-        logger.warning("Hostname/domain was filtered: {} -> {}".format(hostname, filtered_hostname))
+    if hostname != resulted_hostname:
+        logger.warning("Hostname/domain was filtered: {} -> {}".format(hostname, resulted_hostname))
     # return safe to apply host-name value
-    return filtered_hostname
+    return resulted_hostname
 
 
 # configure system parameters from OVF template
@@ -198,7 +202,7 @@ def get_ip_type(address):
 
 # configure IP address for interface
 def set_ipaddress(config, iface_type: str, iface: str, address: str,
-                  vlan_id: int):
+                  vlan_id: int = 0):
     # detect an IP address type
     addr_type = get_ip_type(address)
     if not addr_type:
@@ -251,7 +255,7 @@ def set_ip_route(config,
                  dst_net: str,
                  next_hop: str,
                  replace_route: bool = False,
-                 metric: int = None) -> None:
+                 metric: int = 0) -> None:
     try:
         logger.debug(
             "Configuring IPv{} route to {} via {} with metric {}".format(
@@ -312,7 +316,7 @@ def set_domain_search(config, domain_search: str) -> None:
 def _find_usable_iface_name(config,
                             iface_type: str,
                             iface_prefix: str,
-                            suggested_name: str = None) -> str:
+                            suggested_name: str = '') -> str:
     try:
         logger.debug(
             "Searching for usable interface name for type \"{}\", name prefix \"{}\", suggested name \"{}\""
@@ -321,6 +325,8 @@ def _find_usable_iface_name(config,
         if suggested_name and iface_prefix == suggested_name.rstrip(
                 '1234567890'):
             return suggested_name
+        # return interface with zero index if no interfaces exists currently
+        usable_iface_name = "{}{}".format(iface_prefix, '0')
         # check if already exists any interfaces with this type
         if config.exists(['interfaces', iface_type]):
             iface_names_current = config.list_nodes(['interfaces', iface_type])
@@ -332,9 +338,6 @@ def _find_usable_iface_name(config,
                     iface_found = True
                 else:
                     iface_number = iface_number + 1
-        # return interface with zero index if no interfaces exists currently
-        else:
-            usable_iface_name = "{}{}".format(iface_prefix, '0')
 
         # return an interface name
         logger.debug("Suggested interface name: {}".format(usable_iface_name))
@@ -343,6 +346,7 @@ def _find_usable_iface_name(config,
         logger.error(
             "Impossible to find an usable interface name for type {}, name prefix {}: {}"
             .format(iface_type, iface_prefix, err))
+        return ''
 
 
 # configure subnets for an interface using networking config version 1
@@ -350,7 +354,7 @@ def _configure_subnets_v1(config,
                           iface_type: str,
                           iface_name: str,
                           subnets: list,
-                          vlan_id: int = None):
+                          vlan_id: int = 0):
     for subnet in subnets:
         # configure DHCP client
         if subnet['type'] in ['dhcp', 'dhcp4', 'dhcp6']:
@@ -448,13 +452,13 @@ def set_config_interfaces_v1(config, iface_config: dict):
     if iface_config['type'] == 'route':
         ip_network = ipaddress.ip_network(iface_config['destination'])
         set_ip_route(config, ip_network.version, ip_network.compressed,
-                     iface_config['gateway'], True, iface_config.get('metric'))
+                     iface_config['gateway'], True, iface_config.get('metric', 0))
 
     # configure bonding interfaces
     if iface_config['type'] == 'bond':
         try:
             # find a next unused bonding interface name
-            iface_name_suggested = iface_config.get('name')
+            iface_name_suggested = iface_config.get('name', '')
             iface_name = _find_usable_iface_name(config, 'bonding', 'bond',
                                                  iface_name_suggested)
             # add an interface
@@ -561,7 +565,7 @@ def set_config_interfaces_v1(config, iface_config: dict):
     if iface_config['type'] == 'bridge':
         try:
             # find a next unused bridge interface name
-            iface_name_suggested = iface_config.get('name')
+            iface_name_suggested = iface_config.get('name', '')
             iface_name = _find_usable_iface_name(config, 'bridge', 'br',
                                                  iface_name_suggested)
             # add an interface
@@ -694,7 +698,7 @@ def config_net_v2_common(config,
                          iface_type: str,
                          iface_name: str,
                          iface_config: dict,
-                         vlan_id: int = None) -> None:
+                         vlan_id: int = 0) -> None:
     # configure DHCP client
     if iface_config.get('dhcp4') is True:
         set_ipaddress(config, iface_type, iface_name, 'dhcp', vlan_id)
@@ -1009,6 +1013,7 @@ def handle(name, cfg, cloud, log, _args):
     (default_user, default_user_config) = ug_util.extract_default(users)
     logger.debug("Default user: {}".format(default_user))
     # Get OVF properties
+    ovf_environment = {}
     if 'OVF' in dsname:
         ovf_environment = ovf_get_properties(cloud.datasource.environment)
         logger.debug("OVF environment: {}".format(ovf_environment))
