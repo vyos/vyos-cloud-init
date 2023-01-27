@@ -442,6 +442,10 @@ def set_config_interfaces_v1(config, iface_config: dict):
 
     # configure nameservers
     if iface_config['type'] == 'nameserver':
+        # convert a string to list with a single item if necessary
+        if isinstance(iface_config['address'], str):
+            iface_config['address'] = [iface_config['address']]
+
         for item in iface_config['address']:
             set_name_server(config, item)
 
