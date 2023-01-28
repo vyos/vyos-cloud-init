@@ -323,6 +323,10 @@ def set_config_interfaces_v1(config, iface_config):
 
     # configure nameservers
     if iface_config['type'] == 'nameserver':
+        # convert a string to list with a single item if necessary
+        if isinstance(iface_config['address'], str):
+            iface_config['address'] = [iface_config['address']]
+
         for item in iface_config['address']:
             logger.debug("Configuring DNS nameserver: {}".format(item))
             config.set(['system', 'name-server'], value=item, replace=False)
