@@ -1089,8 +1089,16 @@ def handle(name, cfg, cloud, log, _args):
             hostname = None
         network_configured = True
 
+    # get network-config control options
+    network_config_global: str = get_cfg_by_path(cfg, 'network/config', '')
+    network_config_vyos: str = get_cfg_by_path(
+        cfg, 'vyos_config_options/network_config', network_config_global)
+    if network_config_vyos == 'disabled':
+        logger.debug("Network-config is disabled (global/vyos): {}/{}".format(
+            network_config_global, network_config_vyos))
+
     # process networking configuration data
-    if netcfg and network_configured is False:
+    if netcfg and network_configured is False and network_config_vyos != 'disabled':
         # check which one version of config we have
         # version 1
         if netcfg['version'] == 1:
