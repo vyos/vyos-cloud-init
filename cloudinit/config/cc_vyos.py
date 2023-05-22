@@ -84,7 +84,8 @@ def set_ssh_login(config, user, key_string):
         logger.error("Key base64 not defined, wrong ssh key format.")
         return False
 
-    if not key_parsed.comment:
+    if not key_parsed.comment or not re.fullmatch(r'^[\w]+$', key_parsed.comment, re.ASCII):
+        logger.info("Generating UUID for an SSH key because a comment is empty or unacceptable by CLI")
         key_parsed.comment = "cloud-init-{}".format(uuid4())
 
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'key'], value=key_parsed.base64, replace=True)
