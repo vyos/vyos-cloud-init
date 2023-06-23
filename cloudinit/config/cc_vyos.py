@@ -84,7 +84,8 @@ def set_ssh_login(config, user, key_string):
         logger.error("Key base64 not defined, wrong ssh key format.")
         return False
 
-    if not key_parsed.comment:
+    if not key_parsed.comment or not re.fullmatch(r'^[\w]+$', key_parsed.comment, re.ASCII):
+        logger.info("Generating UUID for an SSH key because a comment is empty or unacceptable by CLI")
         key_parsed.comment = "cloud-init-{}".format(uuid4())
 
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'key'], value=key_parsed.base64, replace=True)
@@ -103,18 +104,22 @@ def set_ssh_login(config, user, key_string):
 # NOTE: here we cannot attempt to deny anything prohibited, as it is too late.
 # Therefore, we need only pass what is allowed, cutting everything else
 def hostname_filter(hostname):
+    # fallback to default hostname if provided name is completely unusable
+    resulted_hostname = 'vyos'
     # define regex for alloweed characters and resulted hostname
     regex_characters = re.compile(r'[a-z0-9.-]', re.IGNORECASE)
     regex_hostname = re.compile(r'[a-z0-9](([a-z0-9-]\.|[a-z0-9-])*[a-z0-9])?', re.IGNORECASE)
     # filter characters
     filtered_characters = ''.join(regex_characters.findall(hostname))
     # check that hostname start and end by allowed characters and cut unsupported ones, limit to 64 characters total
-    filtered_hostname = regex_hostname.search(filtered_characters).group()[:64]
+    filtered_hostname = regex_hostname.search(filtered_characters)
+    if filtered_hostname:
+        resulted_hostname = filtered_hostname.group()[:64]
 
-    if hostname != filtered_hostname:
-        logger.warning("Hostname/domain was filtered: {} -> {}".format(hostname, filtered_hostname))
+    if hostname != resulted_hostname:
+        logger.warning("Hostname/domain was filtered: {} -> {}".format(hostname, resulted_hostname))
     # return safe to apply host-name value
-    return filtered_hostname
+    return resulted_hostname
 
 
 # configure system parameters from OVF template
@@ -141,22 +146,19 @@ def set_config_ovf(config, ovf_environment):
     if ip_address and ip_mask and gateway:
         ip_address_cidr = ipaddress.ip_interface("{}/{}".format(ip_address, ip_mask.replace('/', ''))).with_prefixlen
         logger.debug("Configuring the IP address on the eth0 interface: {}".format(ip_address_cidr))
-        set_ipaddress(config, 'eth0', ip_address_cidr)
+        set_ipaddress(config, 'ethernet', 'eth0', ip_address_cidr)
 
         logger.debug("Configuring default route via: {}".format(gateway))
-        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=gateway, replace=True)
-        config.set_tag(['protocols', 'static', 'route'])
-        config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
+        set_ip_route(config, 4, '0.0.0.0/0', gateway, True)
     else:
         logger.debug("Configuring a DHCP client on the eth0 interface (fallback from OVF)")
-        set_ipaddress(config, 'eth0', 'dhcp')
+        set_ipaddress(config, 'ethernet', 'eth0', 'dhcp')
 
     # Configure DNS servers
     if dns_string:
         dns_list = list(dns_string.replace(' ', '').split(','))
         for server in dns_list:
-            logger.debug("Configuring DNS server: {}".format(server))
-            config.set(['system', 'name-server'], value=server, replace=False)
+            set_name_server(config, server)
 
     # Configure NTP servers
     if ntp_string:
@@ -200,39 +202,224 @@ def get_ip_type(address):
 
 
 # configure IP address for interface
-def set_ipaddress(config, iface, address):
+def set_ipaddress(config, iface_type: str, iface: str, address: str,
+                  vlan_id: int = 0):
     # detect an IP address type
     addr_type = get_ip_type(address)
     if not addr_type:
         logger.error("Unable to configure the IP address: {}".format(address))
         return
-
+    # prepare for VLAN
+    config_address_path = ['interfaces', iface_type, iface, 'address']
+    if vlan_id:
+        config_address_path = [
+            'interfaces', iface_type, iface, 'vif', vlan_id, 'address'
+        ]
     # check a current configuration of an interface
-    if config.exists(['interfaces', 'ethernet', iface, 'address']):
-        current_addresses = config.return_values(['interfaces', 'ethernet', iface, 'address'])
-        logger.debug("IP address for interface {} already configured: {}".format(iface, current_addresses))
+    if config.exists(config_address_path):
+        current_addresses = config.return_values(config_address_path)
+        logger.debug(
+            "IP address for interface {} already configured: {}".format(
+                iface, current_addresses))
         # check if currently configured addresses can be used with new one
         incompatible_addresses = []
         for current_address in current_addresses:
             # dhcp cannot be used with static IP address at the same time
-            if ((addr_type == 'dhcp' and get_ip_type(current_address) == 'ipv4') or
-                    (addr_type == 'ipv4' and get_ip_type(current_address) == 'dhcp') or
-                    (addr_type == 'dhcpv6' and get_ip_type(current_address) == 'ipv6') or
-                    (addr_type == 'ipv6' and get_ip_type(current_address) == 'dhcpv6')):
+            if ((addr_type == 'dhcp'
+                 and get_ip_type(current_address) == 'ipv4')
+                    or (addr_type == 'ipv4'
+                        and get_ip_type(current_address) == 'dhcp')
+                    or (addr_type == 'dhcpv6'
+                        and get_ip_type(current_address) == 'ipv6')
+                    or (addr_type == 'ipv6'
+                        and get_ip_type(current_address) == 'dhcpv6')):
                 incompatible_addresses.append(current_address)
         # inform about error and skip configuration
         if incompatible_addresses:
-            logger.error("IP address {} cannot be configured, because it conflicts with already exists: {}".format(address, incompatible_addresses))
+            logger.error(
+                "IP address {} cannot be configured, because it conflicts with already exists: {}"
+                .format(address, incompatible_addresses))
             return
 
     # configure address
-    logger.debug("Configuring IP address {} on interface {}".format(address, iface))
-    config.set(['interfaces', 'ethernet', iface, 'address'], value=address, replace=False)
-    config.set_tag(['interfaces', 'ethernet'])
+    logger.debug("Configuring IP address {} on interface {}".format(
+        address, iface))
+    config.set(config_address_path, value=address, replace=False)
+    config.set_tag(['interfaces', iface_type])
+    if vlan_id:
+        config.set_tag(['interfaces', iface_type, iface, 'vif'])
+
+
+# configure IP route
+def set_ip_route(config,
+                 ip_ver: int,
+                 dst_net: str,
+                 next_hop: str,
+                 replace_route: bool = False,
+                 metric: int = 0) -> None:
+    try:
+        logger.debug(
+            "Configuring IPv{} route to {} via {} with metric {}".format(
+                ip_ver, dst_net, next_hop, metric))
+        if ip_ver == 4:
+            config.set(['protocols', 'static', 'route', dst_net, 'next-hop'],
+                       value=next_hop,
+                       replace=replace_route)
+            config.set_tag(['protocols', 'static', 'route'])
+            config.set_tag(
+                ['protocols', 'static', 'route', dst_net, 'next-hop'])
+            if metric:
+                config.set([
+                    'protocols', 'static', 'route', dst_net, 'next-hop',
+                    next_hop, 'distance'
+                ],
+                           value=metric,
+                           replace=True)
+        if ip_ver == 6:
+            config.set(['protocols', 'static', 'route6', dst_net, 'next-hop'],
+                       value=next_hop,
+                       replace=replace_route)
+            config.set_tag(['protocols', 'static', 'route6'])
+            config.set_tag(
+                ['protocols', 'static', 'route6', dst_net, 'next-hop'])
+            if metric:
+                config.set([
+                    'protocols', 'static', 'route6', dst_net, 'next-hop',
+                    next_hop, 'distance'
+                ],
+                           value=metric,
+                           replace=True)
+    except Exception as err:
+        logger.error("Impossible to configure an IP route: {}".format(err))
+
+
+# configure DNS nameserver
+def set_name_server(config, name_server: str) -> None:
+    try:
+        logger.debug("Configuring name-server {}".format(name_server))
+        config.set(['system', 'name-server'], value=name_server, replace=False)
+    except Exception as err:
+        logger.error("Impossible to configure a name-server: {}".format(err))
+
+
+# configure search domain
+def set_domain_search(config, domain_search: str) -> None:
+    try:
+        logger.debug("Configuring DNS search domain: {}".format(domain_search))
+        config.set(['system', 'domain-search', 'domain'],
+                   value=domain_search,
+                   replace=False)
+    except Exception as err:
+        logger.error("Impossible to configure a name-server: {}".format(err))
+
+
+# find usable interface name
+def _find_usable_iface_name(config,
+                            iface_type: str,
+                            iface_prefix: str,
+                            suggested_name: str = '') -> str:
+    try:
+        logger.debug(
+            "Searching for usable interface name for type \"{}\", name prefix \"{}\", suggested name \"{}\""
+            .format(iface_type, iface_prefix, suggested_name))
+        # check if we can use a suggested name
+        if suggested_name and iface_prefix == suggested_name.rstrip(
+                '1234567890'):
+            return suggested_name
+        # return interface with zero index if no interfaces exists currently
+        usable_iface_name = "{}{}".format(iface_prefix, '0')
+        # check if already exists any interfaces with this type
+        if config.exists(['interfaces', iface_type]):
+            iface_names_current = config.list_nodes(['interfaces', iface_type])
+            iface_found = False
+            iface_number = int(0)
+            while iface_found is False:
+                usable_iface_name = "{}{}".format(iface_prefix, iface_number)
+                if usable_iface_name not in iface_names_current:
+                    iface_found = True
+                else:
+                    iface_number = iface_number + 1
+
+        # return an interface name
+        logger.debug("Suggested interface name: {}".format(usable_iface_name))
+        return usable_iface_name
+    except Exception as err:
+        logger.error(
+            "Impossible to find an usable interface name for type {}, name prefix {}: {}"
+            .format(iface_type, iface_prefix, err))
+        return ''
+
+
+# configure subnets for an interface using networking config version 1
+def _configure_subnets_v1(config,
+                          iface_type: str,
+                          iface_name: str,
+                          subnets: list,
+                          vlan_id: int = 0):
+    for subnet in subnets:
+        # configure DHCP client
+        if subnet['type'] in ['dhcp', 'dhcp4', 'dhcp6']:
+            if subnet['type'] == 'dhcp6':
+                set_ipaddress(config, iface_type, iface_name, 'dhcpv6',
+                              vlan_id)
+            else:
+                set_ipaddress(config, iface_type, iface_name, 'dhcp', vlan_id)
+            continue
+
+        # configure static options
+        if subnet['type'] in ['static', 'static6']:
+            # configure IP address
+            try:
+                ip_interface = ipaddress.ip_interface(subnet['address'])
+                ip_version = ip_interface.version
+                ip_address = ip_interface.ip.compressed
+                ip_static_addr = ''
+                # format IPv4
+                if ip_version == 4 and ip_address != '0.0.0.0':
+                    if '/' in subnet['address']:
+                        ip_static_addr = ip_interface.compressed
+                    else:
+                        ip_static_addr = ipaddress.IPv4Interface(
+                            '{}/{}'.format(ip_address,
+                                           subnet['netmask'])).compressed
+                # format IPv6
+                if ip_version == 6:
+                    ip_static_addr = ip_interface.compressed
+                # apply to the configuration
+                if ip_static_addr:
+                    set_ipaddress(config, iface_type, iface_name,
+                                  ip_static_addr, vlan_id)
+            except Exception as err:
+                logger.error(
+                    "Impossible to configure static IP address: {}".format(
+                        err))
+
+            # configure gateway
+            if 'gateway' in subnet and subnet['gateway'] != '0.0.0.0':
+                logger.debug("Configuring gateway for {}: {}".format(
+                    iface_name, subnet['gateway']))
+                set_ip_route(config, 4, '0.0.0.0/0', subnet['gateway'], True)
+
+            # configure routes
+            if 'routes' in subnet:
+                for item in subnet['routes']:
+                    ip_network = ipaddress.ip_network('{}/{}'.format(
+                        item['network'], item['netmask']))
+                    set_ip_route(config, ip_network.version,
+                                 ip_network.compressed, item['gateway'], True)
+
+            # configure nameservers
+            if 'dns_nameservers' in subnet:
+                for item in subnet['dns_nameservers']:
+                    set_name_server(config, item)
+
+            if 'dns_search' in subnet:
+                for item in subnet['dns_search']:
+                    set_domain_search(config, item)
 
 
 # configure interface from networking config version 1
-def set_config_interfaces_v1(config, iface_config):
+def set_config_interfaces_v1(config, iface_config: dict):
     logger.debug("Configuring network using Cloud-init networking config version 1")
     # configure physical interfaces
     if iface_config['type'] == 'physical':
@@ -252,74 +439,7 @@ def set_config_interfaces_v1(config, iface_config):
 
         # configure subnets
         if 'subnets' in iface_config:
-            for subnet in iface_config['subnets']:
-                # configure DHCP client
-                if subnet['type'] in ['dhcp', 'dhcp4', 'dhcp6']:
-                    if subnet['type'] == 'dhcp6':
-                        set_ipaddress(config, iface_name, 'dhcpv6')
-                    else:
-                        set_ipaddress(config, iface_name, 'dhcp')
-
-                    continue
-
-                # configure static options
-                if subnet['type'] in ['static', 'static6']:
-                    # configure IP address
-                    try:
-                        ip_interface = ipaddress.ip_interface(subnet['address'])
-                        ip_version = ip_interface.version
-                        ip_address = ip_interface.ip.compressed
-                        ip_static_addr = ''
-                        # format IPv4
-                        if ip_version == 4 and ip_address != '0.0.0.0':
-                            if '/' in subnet['address']:
-                                ip_static_addr = ip_interface.compressed
-                            else:
-                                ip_static_addr = ipaddress.IPv4Interface('{}/{}'.format(ip_address, subnet['netmask'])).compressed
-                        # format IPv6
-                        if ip_version == 6:
-                            ip_static_addr = ip_interface.compressed
-                        # apply to the configuration
-                        if ip_static_addr:
-                            set_ipaddress(config, iface_name, ip_static_addr)
-                    except Exception as err:
-                        logger.error("Impossible to configure static IP address: {}".format(err))
-
-                    # configure gateway
-                    if 'gateway' in subnet and subnet['gateway'] != '0.0.0.0':
-                        logger.debug("Configuring gateway for {}: {}".format(iface_name, subnet['gateway']))
-                        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=subnet['gateway'], replace=True)
-                        config.set_tag(['protocols', 'static', 'route'])
-                        config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
-
-                    # configure routes
-                    if 'routes' in subnet:
-                        for item in subnet['routes']:
-                            try:
-                                ip_network = ipaddress.ip_network('{}/{}'.format(item['network'], item['netmask']))
-                                if ip_network.version == 4:
-                                    logger.debug("Configuring IPv4 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
-                                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
-                                    config.set_tag(['protocols', 'static', 'route'])
-                                    config.set_tag(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'])
-                                if ip_network.version == 6:
-                                    logger.debug("Configuring IPv6 route on {}: {} via {}".format(iface_name, ip_network.compressed, item['gateway']))
-                                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=item['gateway'], replace=True)
-                                    config.set_tag(['protocols', 'static', 'route6'])
-                                    config.set_tag(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'])
-                            except Exception as err:
-                                logger.error("Impossible to detect IP protocol version: {}".format(err))
-
-                    # configure nameservers
-                    if 'dns_nameservers' in subnet:
-                        for item in subnet['dns_nameservers']:
-                            logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
-                            config.set(['system', 'name-server'], value=item, replace=False)
-
-                    if 'dns_search' in subnet:
-                        for item in subnet['dns_search']:
-                            logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                            config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
+            _configure_subnets_v1(config, 'ethernet', iface_name, iface_config['subnets'])
 
     # configure nameservers
     if iface_config['type'] == 'nameserver':
@@ -328,110 +448,486 @@ def set_config_interfaces_v1(config, iface_config):
             iface_config['address'] = [iface_config['address']]
 
         for item in iface_config['address']:
-            logger.debug("Configuring DNS nameserver: {}".format(item))
-            config.set(['system', 'name-server'], value=item, replace=False)
+            set_name_server(config, item)
 
-        if 'search' in iface_config:
-            for item in iface_config['search']:
-                logger.debug("Configuring DNS search domain: {}".format(item))
-                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
+        for item in iface_config.get('search', []):
+            set_domain_search(config, item)
 
     # configure routes
     if iface_config['type'] == 'route':
+        ip_network = ipaddress.ip_network(iface_config['destination'])
+        set_ip_route(config, ip_network.version, ip_network.compressed,
+                     iface_config['gateway'], True, iface_config.get('metric', 0))
+
+    # configure bonding interfaces
+    if iface_config['type'] == 'bond':
         try:
-            ip_network = ipaddress.ip_network(iface_config['destination'])
-            if ip_network.version == 4:
-                logger.debug("Configuring IPv4 route: {} via {}".format(ip_network.compressed, iface_config['gateway']))
-                config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'], value=iface_config['gateway'], replace=True)
-                config.set_tag(['protocols', 'static', 'route'])
-                config.set_tag(['protocols', 'static', 'route', ip_network.compressed, 'next-hop'])
-                if 'metric' in iface_config:
-                    config.set(['protocols', 'static', 'route', ip_network.compressed, 'next-hop', iface_config['gateway'], 'distance'], value=iface_config['metric'], replace=True)
-            if ip_network.version == 6:
-                logger.debug("Configuring IPv6 route: {} via {}".format(ip_network.compressed, iface_config['gateway']))
-                config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'], value=iface_config['gateway'], replace=True)
-                config.set_tag(['protocols', 'static', 'route6'])
-                config.set_tag(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop'])
-                if 'metric' in iface_config:
-                    config.set(['protocols', 'static', 'route6', ip_network.compressed, 'next-hop', iface_config['gateway'], 'distance'], value=iface_config['metric'], replace=True)
+            # find a next unused bonding interface name
+            iface_name_suggested = iface_config.get('name', '')
+            iface_name = _find_usable_iface_name(config, 'bonding', 'bond',
+                                                 iface_name_suggested)
+            # add an interface
+            config.set(['interfaces', 'bonding', iface_name])
+            config.set_tag(['interfaces', 'bonding'])
+            # configure members
+            for member in iface_config.get('bond_interfaces', []):
+                config.set([
+                    'interfaces', 'bonding', iface_name, 'member', 'interface'
+                ],
+                           value=member,
+                           replace=False)
+            # read bonding parameters that VyOS supports
+            mac_address = iface_config.get('mac_address')
+            mtu = iface_config.get('mtu')
+            arp_interval = get_cfg_by_path(iface_config, 'params/arp_interval')
+            arp_ip_target = get_cfg_by_path(iface_config,
+                                            'params/arp_ip_target')
+            lacp_rate = get_cfg_by_path(iface_config, 'params/lacp_rate')
+            min_links = get_cfg_by_path(iface_config, 'params/min_links')
+            mode = get_cfg_by_path(iface_config, 'params/mode')
+            primary = get_cfg_by_path(iface_config, 'params/primary')
+            xmit_hash_policy = get_cfg_by_path(iface_config,
+                                               'params/xmit_hash_policy')
+            # apply parameters
+            if mac_address:
+                config.set(['interfaces', 'bonding', iface_name, 'mac'],
+                           value=mac_address,
+                           replace=True)
+            if mtu:
+                config.set(['interfaces', 'bonding', iface_name, 'mtu'],
+                           value=mtu,
+                           replace=True)
+            if arp_interval:
+                config.set([
+                    'interfaces', 'bonding', iface_name, 'arp-monitor',
+                    'interval'
+                ],
+                           value=arp_interval,
+                           replace=True)
+            if arp_ip_target:
+                ip_targets = arp_ip_target.split(',')
+                for ip_target in ip_targets:
+                    config.set([
+                        'interfaces', 'bonding', iface_name, 'arp-monitor',
+                        'target'
+                    ],
+                               value=ip_target,
+                               replace=False)
+            if lacp_rate:
+                lacp_rate_translate = {
+                    0: 'slow',
+                    1: 'fast',
+                    'slow': 'slow',
+                    'fast': 'fast'
+                }
+                config.set(['interfaces', 'bonding', iface_name, 'lacp-rate'],
+                           value=lacp_rate_translate[lacp_rate],
+                           replace=True)
+            if min_links:
+                config.set(['interfaces', 'bonding', iface_name, 'min-links'],
+                           value=min_links,
+                           replace=True)
+            if mode:
+                mode_translate = {
+                    0: 'round-robin',
+                    1: 'active-backup',
+                    2: 'xor-hash',
+                    3: 'broadcast',
+                    4: '802.3ad',
+                    5: 'transmit-load-balance',
+                    6: 'adaptive-load-balance',
+                    'balance-rr': 'round-robin',
+                    'active-backup': 'active-backup',
+                    'balance-xor': 'xor-hash',
+                    'broadcast': 'broadcast',
+                    '802.3ad': '802.3ad',
+                    'balance-tlb': 'transmit-load-balance',
+                    'balance-alb': 'adaptive-load-balance'
+                }
+                config.set(['interfaces', 'bonding', iface_name, 'mode'],
+                           value=mode_translate[mode],
+                           replace=True)
+            if primary:
+                config.set(['interfaces', 'bonding', iface_name, 'primary'],
+                           value=primary,
+                           replace=True)
+            if xmit_hash_policy:
+                config.set(
+                    ['interfaces', 'bonding', iface_name, 'hash-policy'],
+                    value=xmit_hash_policy,
+                    replace=True)
+
+            # configure subnets
+            if 'subnets' in iface_config:
+                _configure_subnets_v1(config, 'bonding', iface_name,
+                                      iface_config['subnets'])
+
         except Exception as err:
-            logger.error("Impossible to detect IP protocol version: {}".format(err))
+            logger.error(
+                "Impossible to configure bonding interface: {}".format(err))
+
+    # configure bridge interfaces
+    if iface_config['type'] == 'bridge':
+        try:
+            # find a next unused bridge interface name
+            iface_name_suggested = iface_config.get('name', '')
+            iface_name = _find_usable_iface_name(config, 'bridge', 'br',
+                                                 iface_name_suggested)
+            # add an interface
+            config.set(['interfaces', 'bridge', iface_name])
+            config.set_tag(['interfaces', 'bridge'])
+            # configure members
+            for member in iface_config.get('bridge_interfaces', []):
+                config.set([
+                    'interfaces', 'bridge', iface_name, 'member', 'interface',
+                    member
+                ],
+                           value=None,
+                           replace=False)
+                config.set_tag([
+                    'interfaces', 'bridge', iface_name, 'member', 'interface'
+                ])
+            # read bridge parameters that VyOS supports
+            bridge_ageing = get_cfg_by_path(iface_config,
+                                            'params/bridge_ageing')
+            bridge_bridgeprio = get_cfg_by_path(iface_config,
+                                                'params/bridge_bridgeprio')
+            bridge_fd = get_cfg_by_path(iface_config, 'params/bridge_fd')
+            bridge_hello = get_cfg_by_path(iface_config, 'params/bridge_hello')
+            bridge_hw = get_cfg_by_path(iface_config, 'params/bridge_hw')
+            bridge_maxage = get_cfg_by_path(iface_config,
+                                            'params/bridge_maxage')
+            bridge_pathcost = get_cfg_by_path(iface_config,
+                                              'params/bridge_pathcost')
+            bridge_portprio = get_cfg_by_path(iface_config,
+                                              'params/bridge_portprio')
+            bridge_stp = get_cfg_by_path(iface_config, 'params/bridge_stp')
+            # apply parameters
+            if bridge_ageing:
+                config.set(['interfaces', 'bridge', iface_name, 'aging'],
+                           value=bridge_ageing,
+                           replace=True)
+            if bridge_bridgeprio:
+                config.set(['interfaces', 'bridge', iface_name, 'priority'],
+                           value=bridge_bridgeprio,
+                           replace=True)
+            if bridge_fd:
+                config.set(
+                    ['interfaces', 'bridge', iface_name, 'forwarding-delay'],
+                    value=bridge_fd,
+                    replace=True)
+            if bridge_hello:
+                config.set(['interfaces', 'bridge', iface_name, 'hello-time'],
+                           value=bridge_hello,
+                           replace=False)
+            if bridge_hw:
+                config.set(['interfaces', 'bridge', iface_name, 'mac'],
+                           value=bridge_hw,
+                           replace=True)
+            if bridge_maxage:
+                config.set(['interfaces', 'bridge', iface_name, 'max-age'],
+                           value=bridge_maxage,
+                           replace=True)
+            if bridge_pathcost:
+                for member_item in bridge_pathcost:
+                    member_name, member_cost = member_item.split()
+                    config.set([
+                        'interfaces', 'bridge', iface_name, 'member',
+                        'interface', member_name, 'cost'
+                    ],
+                               value=member_cost,
+                               replace=True)
+            if bridge_portprio:
+                for member_item in bridge_portprio:
+                    member_name, member_prio = member_item.split()
+                    config.set([
+                        'interfaces', 'bridge', iface_name, 'member',
+                        'interface', member_name, 'priority'
+                    ],
+                               value=member_prio,
+                               replace=True)
+            if bridge_stp and bridge_stp == 'on':
+                config.set(['interfaces', 'bridge', iface_name, 'stp'],
+                           value=None,
+                           replace=True)
+
+            # configure subnets
+            if 'subnets' in iface_config:
+                _configure_subnets_v1(config, 'bridge', iface_name,
+                                      iface_config['subnets'])
+
+        except Exception as err:
+            logger.error(
+                "Impossible to configure bridge interface: {}".format(err))
+
+    # configure vlan interfaces
+    if iface_config['type'] == 'vlan':
+        try:
+            # get mandatory interface parameters
+            iface_name = iface_config['name']
+            vlan_link = iface_config['vlan_link']
+            vlan_id = iface_config['vlan_id']
+            # get optional parameters
+            vlan_mtu = iface_config.get('mtu')
+            # prepare translation table for parent interface type
+            interface_type_detect = {
+                'eth': 'ethernet',
+                'br': 'bridge',
+                'bond': 'bonding'
+            }
+            # find interface type
+            iface_type = interface_type_detect[vlan_link.rstrip('1234567890')]
+            # create an interface
+            config.set(['interfaces', iface_type, vlan_link, 'vif', vlan_id])
+            config.set_tag(['interfaces', iface_type])
+            config.set_tag(['interfaces', iface_type, vlan_link, 'vif'])
+            # configure optional parameters
+            if vlan_mtu:
+                config.set([
+                    'interfaces', iface_type, vlan_link, 'vif', vlan_id, 'mtu'
+                ],
+                           value=vlan_mtu,
+                           replace=True)
+            # configure subnets
+            if 'subnets' in iface_config:
+                _configure_subnets_v1(config, iface_type, vlan_link,
+                                      iface_config['subnets'], vlan_id)
+
+        except Exception as err:
+            logger.error(
+                "Impossible to configure VLAN interface: {}".format(err))
 
 
-# configure interface from networking config version 2
-def set_config_interfaces_v2(config, iface_name, iface_config):
-    logger.debug("Configuring network using Cloud-init networking config version 2")
-
-    # configure MAC
-    if 'match' in iface_config and 'macaddress' in iface_config['match']:
-        logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['match']['macaddress']))
-        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['match']['macaddress'], replace=True)
-        config.set_tag(['interfaces', 'ethernet'])
-
+# configure common interface options from Network-Config version 2
+def config_net_v2_common(config,
+                         iface_type: str,
+                         iface_name: str,
+                         iface_config: dict,
+                         vlan_id: int = 0) -> None:
     # configure DHCP client
-    if 'dhcp4' in iface_config:
-        if iface_config['dhcp4'] is True:
-            set_ipaddress(config, iface_name, 'dhcp')
-    if 'dhcp6' in iface_config:
-        if iface_config['dhcp6'] is True:
-            set_ipaddress(config, iface_name, 'dhcpv6')
+    if iface_config.get('dhcp4') is True:
+        set_ipaddress(config, iface_type, iface_name, 'dhcp', vlan_id)
+    if iface_config.get('dhcp6') is True:
+        set_ipaddress(config, iface_type, iface_name, 'dhcpv6', vlan_id)
 
     # configure static addresses
-    if 'addresses' in iface_config:
-        for item in iface_config['addresses']:
-            set_ipaddress(config, iface_name, item)
+    for item in iface_config.get('addresses', []):
+        set_ipaddress(config, iface_type, iface_name, item, vlan_id)
 
     # configure gateways
     if 'gateway4' in iface_config:
-        logger.debug("Configuring IPv4 gateway for {}: {}".format(iface_name, iface_config['gateway4']))
-        config.set(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'], value=iface_config['gateway4'], replace=True)
-        config.set_tag(['protocols', 'static', 'route'])
-        config.set_tag(['protocols', 'static', 'route', '0.0.0.0/0', 'next-hop'])
+        logger.debug("Configuring IPv4 gateway for {} (VLAN {}): {}".format(
+            iface_name, vlan_id, iface_config['gateway4']))
+        set_ip_route(config, 4, '0.0.0.0/0', iface_config['gateway4'], True)
     if 'gateway6' in iface_config:
-        logger.debug("Configuring IPv6 gateway for {}: {}".format(iface_name, iface_config['gateway6']))
-        config.set(['protocols', 'static', 'route6', '::/0', 'next-hop'], value=iface_config['gateway6'], replace=True)
-        config.set_tag(['protocols', 'static', 'route6'])
-        config.set_tag(['protocols', 'static', 'route6', '::/0', 'next-hop'])
+        logger.debug("Configuring IPv6 gateway for {} (VLAN {}): {}".format(
+            iface_name, vlan_id, iface_config['gateway6']))
+        set_ip_route(config, 6, '::/0', iface_config['gateway6'], True)
 
     # configure MTU
     if 'mtu' in iface_config:
-        logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
-        config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
-        config.set_tag(['interfaces', 'ethernet'])
-
-    # configure routes
-    if 'routes' in iface_config:
-        for item in iface_config['routes']:
-            try:
-                if ipaddress.ip_network(item['to']).version == 4:
-                    logger.debug("Configuring IPv4 route on {}: {} via {}".format(iface_name, item['to'], item['via']))
-                    config.set(['protocols', 'static', 'route', item['to'], 'next-hop'], value=item['via'], replace=True)
-                    config.set_tag(['protocols', 'static', 'route'])
-                    config.set_tag(['protocols', 'static', 'route', item['to'], 'next-hop'])
-                if ipaddress.ip_network(item['to']).version == 6:
-                    logger.debug("Configuring IPv6 route on {}: {} via {}".format(iface_name, item['to'], item['via']))
-                    config.set(['protocols', 'static', 'route6', item['to'], 'next-hop'], value=item['via'], replace=True)
-                    config.set_tag(['protocols', 'static', 'route6'])
-                    config.set_tag(['protocols', 'static', 'route6', item['to'], 'next-hop'])
-            except Exception as err:
-                logger.error("Impossible to detect IP protocol version: {}".format(err))
+        logger.debug("Setting MTU for {} (VLAN {}): {}".format(
+            iface_name, vlan_id, iface_config['mtu']))
+        if vlan_id:
+            config.set(
+                ['interfaces', iface_type, iface_name, 'vif', vlan_id, 'mtu'],
+                value=iface_config['mtu'],
+                replace=True)
+        else:
+            config.set(['interfaces', iface_type, iface_name, 'mtu'],
+                       value=iface_config['mtu'],
+                       replace=True)
+        config.set_tag(['interfaces', iface_type])
 
     # configure nameservers
     if 'nameservers' in iface_config:
-        if 'search' in iface_config['nameservers']:
-            for item in iface_config['nameservers']['search']:
-                logger.debug("Configuring DNS search domain for {}: {}".format(iface_name, item))
-                config.set(['system', 'domain-search', 'domain'], value=item, replace=False)
-        if 'addresses' in iface_config['nameservers']:
-            for item in iface_config['nameservers']['addresses']:
-                logger.debug("Configuring DNS nameserver for {}: {}".format(iface_name, item))
-                config.set(['system', 'name-server'], value=item, replace=False)
+        for item in iface_config['nameservers'].get('search', []):
+            set_domain_search(config, item)
+        for item in iface_config['nameservers'].get('addresses', []):
+            set_name_server(config, item)
+
+    # configure routes
+    for item in iface_config.get('routes', []):
+        set_ip_route(config,
+                     ipaddress.ip_network(item['to']).version, item['to'],
+                     item['via'], True, item.get('metric'))
 
 
-# configure DHCP client for eth0 interface (fallback)
-def set_config_dhcp(config):
-    logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
-    set_ipaddress(config, 'eth0', 'dhcp')
+# configure bond interafce from Network-Config version 2
+def config_net_v2_bond(config, iface_name: str, iface_config: dict) -> None:
+    # find an usable bonding interface name
+    iface_name = _find_usable_iface_name(config, 'bonding', 'bond', iface_name)
+    config_net_v2_common(config, 'bonding', iface_name, iface_config)
+    # add an interface
+    config.set(['interfaces', 'bonding', iface_name])
+    config.set_tag(['interfaces', 'bonding'])
+    # configure members
+    for member in iface_config.get('interfaces', []):
+        config.set(
+            ['interfaces', 'bonding', iface_name, 'member', 'interface'],
+            value=member,
+            replace=False)
+    # read bonding parameters that VyOS supports
+    mode = get_cfg_by_path(iface_config, 'parameters/mode')
+    lacp_rate = get_cfg_by_path(iface_config, 'parameters/lacp-rate')
+    min_links = get_cfg_by_path(iface_config, 'parameters/min-links')
+    transmit_hash_policy = get_cfg_by_path(iface_config,
+                                           'parameters/transmit-hash-policy')
+    arp_interval = get_cfg_by_path(iface_config, 'parameters/arp-interval')
+    arp_ip_targets = get_cfg_by_path(iface_config, 'parameters/arp-ip-targets')
+    # apply parameters
+    if mode:
+        mode_translate = {
+            0: 'round-robin',
+            1: 'active-backup',
+            2: 'xor-hash',
+            3: 'broadcast',
+            4: '802.3ad',
+            5: 'transmit-load-balance',
+            6: 'adaptive-load-balance',
+            'balance-rr': 'round-robin',
+            'active-backup': 'active-backup',
+            'balance-xor': 'xor-hash',
+            'broadcast': 'broadcast',
+            '802.3ad': '802.3ad',
+            'balance-tlb': 'transmit-load-balance',
+            'balance-alb': 'adaptive-load-balance'
+        }
+        config.set(['interfaces', 'bonding', iface_name, 'mode'],
+                   value=mode_translate[mode],
+                   replace=True)
+    if lacp_rate:
+        lacp_rate_translate = {
+            0: 'slow',
+            1: 'fast',
+            'slow': 'slow',
+            'fast': 'fast'
+        }
+        config.set(['interfaces', 'bonding', iface_name, 'lacp-rate'],
+                   value=lacp_rate_translate[lacp_rate],
+                   replace=True)
+    if min_links:
+        config.set(['interfaces', 'bonding', iface_name, 'min-links'],
+                   value=min_links,
+                   replace=True)
+    if transmit_hash_policy:
+        config.set(['interfaces', 'bonding', iface_name, 'hash-policy'],
+                   value=transmit_hash_policy,
+                   replace=True)
+    if arp_interval:
+        config.set(
+            ['interfaces', 'bonding', iface_name, 'arp-monitor', 'interval'],
+            value=arp_interval,
+            replace=True)
+    # TODO: check the exact format of this option
+    if arp_ip_targets:
+        for ip_target in arp_ip_targets:
+            config.set(
+                ['interfaces', 'bonding', iface_name, 'arp-monitor', 'target'],
+                value=ip_target,
+                replace=False)
+
+
+# configure bridge interafce from Network-Config version 2
+def config_net_v2_bridge(config, iface_name: str, iface_config: dict) -> None:
+    # find an usable bridge interface name
+    iface_name = _find_usable_iface_name(config, 'bridge', 'br', iface_name)
+    config_net_v2_common(config, 'bridge', iface_name, iface_config)
+    # add an interface
+    config.set(['interfaces', 'bridge', iface_name])
+    config.set_tag(['interfaces', 'bridge'])
+    # configure members
+    for member in iface_config.get('interfaces', []):
+        config.set([
+            'interfaces', 'bridge', iface_name, 'member', 'interface', member
+        ],
+                   value=None,
+                   replace=False)
+        config.set_tag(
+            ['interfaces', 'bridge', iface_name, 'member', 'interface'])
+    # read bridge parameters that VyOS supports
+    ageing_time = get_cfg_by_path(iface_config, 'parameters/ageing-time')
+    priority = get_cfg_by_path(iface_config, 'parameters/priority')
+    forward_delay = get_cfg_by_path(iface_config, 'parameters/forward-delay')
+    hello_time = get_cfg_by_path(iface_config, 'parameters/hello-time')
+    max_age = get_cfg_by_path(iface_config, 'parameters/max-age')
+    stp = get_cfg_by_path(iface_config, 'parameters/stp')
+    # apply parameters
+    if ageing_time:
+        config.set(['interfaces', 'bridge', iface_name, 'aging'],
+                   value=ageing_time,
+                   replace=True)
+    if priority:
+        config.set(['interfaces', 'bridge', iface_name, 'priority'],
+                   value=priority,
+                   replace=True)
+    if forward_delay:
+        config.set(['interfaces', 'bridge', iface_name, 'forwarding-delay'],
+                   value=forward_delay,
+                   replace=True)
+    if hello_time:
+        config.set(['interfaces', 'bridge', iface_name, 'hello-time'],
+                   value=hello_time,
+                   replace=True)
+    if max_age:
+        config.set(['interfaces', 'bridge', iface_name, 'max-age'],
+                   value=max_age,
+                   replace=True)
+    if stp and stp is True:
+        config.set(['interfaces', 'bridge', iface_name, 'stp'],
+                   value=None,
+                   replace=True)
+
+
+# configure vlan interafce from Network-Config version 2
+def config_net_v2_vlan(config, iface_name: str, iface_config: dict) -> None:
+    logger.debug("Configuring VLAN interface {}".format(iface_name))
+    # get mandatory interface parameters
+    vlan_link = iface_config['link']
+    vlan_id = iface_config['id']
+    # prepare translation table for parent interface type
+    interface_type_detect = {
+        'eth': 'ethernet',
+        'br': 'bridge',
+        'bond': 'bonding'
+    }
+    # find interface type
+    iface_type = interface_type_detect[vlan_link.rstrip('1234567890')]
+    # create an interface
+    config.set(['interfaces', iface_type, vlan_link, 'vif', vlan_id])
+    config.set_tag(['interfaces', iface_type])
+    config.set_tag(['interfaces', iface_type, vlan_link, 'vif'])
+    # configure common parameters
+    config_net_v2_common(config, iface_type, vlan_link, iface_config, vlan_id)
+
+
+# configure ethernet interafce from Network-Config version 2
+def config_net_v2_ethernet(config, iface_name: str,
+                           iface_config: dict) -> None:
+    config_net_v2_common(config, 'ethernet', iface_name, iface_config)
+
+    # configure MAC
+    if 'match' in iface_config and 'macaddress' in iface_config['match']:
+        logger.debug("Setting MAC for {}: {}".format(
+            iface_name, iface_config['match']['macaddress']))
+        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'],
+                   value=iface_config['match']['macaddress'],
+                   replace=True)
+        config.set_tag(['interfaces', 'ethernet'])
+
+
+# configure interface from networking config version 2
+def set_config_interfaces_v2(config, netcfg: dict) -> None:
+    logger.debug(
+        "Configuring network using Cloud-init networking config version 2")
+    for iface_name, iface_config in netcfg.get('ethernets', {}).items():
+        config_net_v2_ethernet(config, iface_name, iface_config)
+    for iface_name, iface_config in netcfg.get('bonds', {}).items():
+        config_net_v2_bond(config, iface_name, iface_config)
+    for iface_name, iface_config in netcfg.get('bridges', {}).items():
+        config_net_v2_bridge(config, iface_name, iface_config)
+    for iface_name, iface_config in netcfg.get('vlans', {}).items():
+        config_net_v2_vlan(config, iface_name, iface_config)
 
 
 # configure SSH server service
@@ -509,8 +1005,7 @@ def handle(name, cfg, cloud, log, _args):
     # Depending on Network-config version (and maybe something else)
     # Cloud-init may provide output here in different formats. That
     # is why we need to add this additional validation and conversion
-    # to what we expect to see in the end. Most likely, the reason is
-    # in: https://bugs.launchpad.net/cloud-init/+bug/1906187
+    # to what we expect to see in the end
     netcfg = netcfg.get('network', netcfg)
     logger.debug("Network-config: {}".format(netcfg))
     logger.debug("Network-config source: {}".format(netcfg_src))
@@ -523,6 +1018,7 @@ def handle(name, cfg, cloud, log, _args):
     (default_user, default_user_config) = ug_util.extract_default(users)
     logger.debug("Default user: {}".format(default_user))
     # Get OVF properties
+    ovf_environment = {}
     if 'OVF' in dsname:
         ovf_environment = ovf_get_properties(cloud.datasource.environment)
         logger.debug("OVF environment: {}".format(ovf_environment))
@@ -613,14 +1109,13 @@ def handle(name, cfg, cloud, log, _args):
 
         # version 2
         if netcfg['version'] == 2:
-            if 'ethernets' in netcfg:
-                for interface_name, interface_config in netcfg['ethernets'].items():
-                    set_config_interfaces_v2(config, interface_name, interface_config)
-                network_configured = True
+            set_config_interfaces_v2(config, netcfg)
+            network_configured = True
 
     # enable DHCPv4 on eth0 if network still not configured
     if network_configured is False:
-        set_config_dhcp(config)
+        logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
+        set_ipaddress(config, 'ethernet', 'eth0', 'dhcp')
 
     # enable SSH service
     set_config_ssh(config)
