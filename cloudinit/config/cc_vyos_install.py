@@ -264,23 +264,23 @@ def grub_configure(grub_dir: str, vyos_version: str,
     terminal_input --append serial console
 
     menuentry "VyOS { vyos_version } (KVM console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } (Serial console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (KVM console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (Serial console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset
+        initrd /boot/{ vyos_version }/initrd.img
     }}
     ''')
 
