@@ -340,13 +340,13 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
         f'partiton {install_target}{part_prefix}2 mouted to {DIR_DST_ROOT}/boot/efi'
     )
 
+    # copy config
     # a config dir. It is the deepest one, so the comand will
     # create all the rest in a single step
-    target_config_dir: str = f'{DIR_DST_ROOT}/boot/{image_name}/rw/opt/vyatta/etc/config/'
+    target_config_dir: str = f'{DIR_DST_ROOT}/boot/{image_name}/rw/opt/vyatta/etc/'
     Path(target_config_dir).mkdir(parents=True)
-    # copy config
-    copy('/opt/vyatta/etc/config/config.boot', target_config_dir)
-    Path(f'{target_config_dir}/.vyatta_config').touch()
+    # we must use Linux cp command, because Python cannot preserve ownership
+    run(['cp', '-pr', '/opt/vyatta/etc/config', target_config_dir])
     LOG.info('configuration copied from running system')
 
     # create a persistence.conf
