@@ -307,7 +307,6 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
     for dev_type in ['nvme', 'mmcblk']:
         if dev_type in install_target:
             part_prefix = 'p'
-    install_target, target_size = find_disk()
     LOG.info(
         f'system will be installed to {install_target} ({target_size} bytes)')
 
