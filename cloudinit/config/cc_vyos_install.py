@@ -250,6 +250,8 @@ def grub_configure(grub_dir: str, vyos_version: str,
         default_boot = 0
     elif boot_params['console_type'] == 'serial':
         default_boot = 1
+    if boot_params['cmdline_extra']:
+        cmdline_extra = f' {boot_params["cmdline_extra"]}'
     grub_cfg_content: str = dedent(f'''
     # load EFI video modules
     if [ "${{grub_platform}}" == "efi" ]; then
@@ -264,22 +266,22 @@ def grub_configure(grub_dir: str, vyos_version: str,
     terminal_input --append serial console
 
     menuentry "VyOS { vyos_version } (KVM console)" {{
-        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0{cmdline_extra}
         initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } (Serial console)" {{
-        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}{cmdline_extra}
         initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (KVM console)" {{
-        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset{cmdline_extra}
         initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (Serial console)" {{
-        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset{cmdline_extra}
         initrd /boot/{ vyos_version }/initrd.img
     }}
     ''')
@@ -379,7 +381,9 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
         'serial_console_speed':
             get_cfg_by_path(cfg,
                             'vyos_install/boot_params/serial_console_speed',
-                            '9600')
+                            '9600'),
+        'cmdline_extra':
+            get_cfg_by_path(cfg, 'vyos_install/boot_params/cmdline_extra', '')
     }
     grub_configure(f'{DIR_DST_ROOT}/boot/grub', image_name, boot_params)
     LOG.info('GRUB configured')
