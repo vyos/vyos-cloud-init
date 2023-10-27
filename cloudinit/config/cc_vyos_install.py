@@ -250,6 +250,8 @@ def grub_configure(grub_dir: str, vyos_version: str,
         default_boot = 0
     elif boot_params['console_type'] == 'serial':
         default_boot = 1
+    if boot_params['cmdline_extra']:
+        cmdline_extra = f' {boot_params["cmdline_extra"]}'
     grub_cfg_content: str = dedent(f'''
     # load EFI video modules
     if [ "${{grub_platform}}" == "efi" ]; then
@@ -264,23 +266,23 @@ def grub_configure(grub_dir: str, vyos_version: str,
     terminal_input --append serial console
 
     menuentry "VyOS { vyos_version } (KVM console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0{cmdline_extra}
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } (Serial console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']}{cmdline_extra}
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (KVM console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=tty0 init=/opt/vyatta/sbin/standalone_root_pw_reset{cmdline_extra}
+        initrd /boot/{ vyos_version }/initrd.img
     }}
 
     menuentry "VyOS { vyos_version } - password reset (Serial console)" {{
-    linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset
-    initrd /boot/{ vyos_version }/initrd.img
+        linux /boot/{ vyos_version }/vmlinuz boot=live rootdelay=5 noautologin net.ifnames=0 biosdevname=0 vyos-union=/boot/{ vyos_version } console=ttyS{boot_params['serial_console_num']},{boot_params['serial_console_speed']} init=/opt/vyatta/sbin/standalone_root_pw_reset{cmdline_extra}
+        initrd /boot/{ vyos_version }/initrd.img
     }}
     ''')
 
@@ -307,7 +309,6 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
     for dev_type in ['nvme', 'mmcblk']:
         if dev_type in install_target:
             part_prefix = 'p'
-    install_target, target_size = find_disk()
     LOG.info(
         f'system will be installed to {install_target} ({target_size} bytes)')
 
@@ -340,13 +341,13 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
         f'partiton {install_target}{part_prefix}2 mouted to {DIR_DST_ROOT}/boot/efi'
     )
 
+    # copy config
     # a config dir. It is the deepest one, so the comand will
     # create all the rest in a single step
-    target_config_dir: str = f'{DIR_DST_ROOT}/boot/{image_name}/rw/opt/vyatta/etc/config/'
+    target_config_dir: str = f'{DIR_DST_ROOT}/boot/{image_name}/rw/opt/vyatta/etc/'
     Path(target_config_dir).mkdir(parents=True)
-    # copy config
-    copy('/opt/vyatta/etc/config/config.boot', target_config_dir)
-    Path(f'{target_config_dir}/.vyatta_config').touch()
+    # we must use Linux cp command, because Python cannot preserve ownership
+    run(['cp', '-pr', '/opt/vyatta/etc/config', target_config_dir])
     LOG.info('configuration copied from running system')
 
     # create a persistence.conf
@@ -380,7 +381,9 @@ def handle(name: str, cfg: dict, cloud: Cloud, _: Logger, args: list) -> None:
         'serial_console_speed':
             get_cfg_by_path(cfg,
                             'vyos_install/boot_params/serial_console_speed',
-                            '9600')
+                            '9600'),
+        'cmdline_extra':
+            get_cfg_by_path(cfg, 'vyos_install/boot_params/cmdline_extra', '')
     }
     grub_configure(f'{DIR_DST_ROOT}/boot/grub', image_name, boot_params)
     LOG.info('GRUB configured')
