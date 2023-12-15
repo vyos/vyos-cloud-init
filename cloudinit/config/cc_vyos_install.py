@@ -246,12 +246,15 @@ def grub_configure(grub_dir: str, vyos_version: str,
         vyos_version (str): VyOS version id
         boot_params (dict[str, str]): boot parameters
     """
-    if boot_params['console_type'] == 'kvm':
-        default_boot = 0
-    elif boot_params['console_type'] == 'serial':
+    if boot_params['console_type'] == 'serial':
         default_boot = 1
+    else:
+        default_boot = 0
+
     if boot_params['cmdline_extra']:
         cmdline_extra = f' {boot_params["cmdline_extra"]}'
+    else:
+        cmdline_extra = ''
     grub_cfg_content: str = dedent(f'''
     # load EFI video modules
     if [ "${{grub_platform}}" == "efi" ]; then
