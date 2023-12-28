@@ -44,6 +44,9 @@ logger.setLevel(logging.DEBUG)
 
 frequency = PER_INSTANCE
 
+# default values
+DEFAULT_ETH_MTU = 1500
+
 
 class VyosError(Exception):
     """Raised when the distro runs into an exception when setting vyos config.
@@ -250,6 +253,37 @@ def set_ipaddress(config, iface_type: str, iface: str, address: str,
         config.set_tag(['interfaces', iface_type, iface, 'vif'])
 
 
+# configure MTU for Ethernet
+def set_ether_mtu(config, iface: str, mtu: int) -> None:
+    """Configure MTU for Ethernet interface
+
+    Args:
+        config (_type_): configuration object
+        iface (str): interface name
+        mtu (int): MTU value
+    """
+    logger.debug("Setting MTU for {}: {}".format(iface, mtu))
+    # get maximum possible MTU
+    iplink = run(['ip', '-json', '-detail', 'link', 'show', 'dev', iface],
+                 capture_output=True)
+    if iplink.returncode != 0:
+        logger.debug("Cannot get interface details for {}".format(iface))
+    else:
+        iface_detail = load_json(iplink.stdout, root_types=(list,))
+        if iface_detail:
+            max_mtu = iface_detail[0].get('max_mtu')
+            if max_mtu and max_mtu < mtu:
+                logger.debug(
+                    "Requested MTU ({}) is greater than maximum supported ({}), reducing it"
+                    .format(mtu, max_mtu))
+                mtu = max_mtu
+
+    config.set(['interfaces', 'ethernet', iface, 'mtu'],
+                value=mtu,
+                replace=True)
+    config.set_tag(['interfaces', 'ethernet'])
+
+
 # configure IP route
 def set_ip_route(config,
                  ip_ver: int,
@@ -433,9 +467,11 @@ def set_config_interfaces_v1(config, iface_config: dict):
 
         # configre MTU
         if 'mtu' in iface_config:
-            logger.debug("Setting MTU for {}: {}".format(iface_name, iface_config['mtu']))
-            config.set(['interfaces', 'ethernet', iface_name, 'mtu'], value=iface_config['mtu'], replace=True)
-            config.set_tag(['interfaces', 'ethernet'])
+            set_ether_mtu(config, iface_name, iface_config['mtu'])
+        # We still need to set default MTU for Ethernet, for compatibility reasons
+        else:
+            set_ether_mtu(config, iface_name, DEFAULT_ETH_MTU)
+
 
         # configure subnets
         if 'subnets' in iface_config:
@@ -734,10 +770,16 @@ def config_net_v2_common(config,
                 value=iface_config['mtu'],
                 replace=True)
         else:
-            config.set(['interfaces', iface_type, iface_name, 'mtu'],
-                       value=iface_config['mtu'],
-                       replace=True)
+            if iface_type == 'ethernet':
+                set_ether_mtu(config, iface_name, iface_config['mtu'])
+            else:
+                config.set(['interfaces', iface_type, iface_name, 'mtu'],
+                           value=iface_config['mtu'],
+                           replace=True)
         config.set_tag(['interfaces', iface_type])
+    # We still need to set default MTU for Ethernet, for compatibility reasons
+    elif 'mtu' not in iface_config and iface_type == 'ethernet':
+        set_ether_mtu(config, iface_name, DEFAULT_ETH_MTU)
 
     # configure nameservers
     if 'nameservers' in iface_config:
@@ -974,6 +1016,11 @@ def network_cleanup():
         except Exception as err:
             logger.error(f"Failed to cleanup network configuration: {err}")
 
+    udev_rules_file = Path('/etc/udev/rules.d/70-persistent-net.rules')
+    if udev_rules_file.exists():
+        logger.debug(f"Configuration file {udev_rules_file} was removed")
+        udev_rules_file.unlink()
+
 
 # main config handler
 def handle(name, cfg, cloud, log, _args):
@@ -1028,7 +1075,7 @@ def handle(name, cfg, cloud, log, _args):
     bak_file_name = '/opt/vyatta/etc/config.boot.default'
 
     # open configuration file
-    if not Path(cfg_file_name).exists:
+    if not Path(cfg_file_name).exists():
         file_name = bak_file_name
     else:
         file_name = cfg_file_name
@@ -1116,6 +1163,8 @@ def handle(name, cfg, cloud, log, _args):
     if network_configured is False:
         logger.debug("Configuring DHCPv4 on eth0 interface (fallback)")
         set_ipaddress(config, 'ethernet', 'eth0', 'dhcp')
+        # this will protect from unsupported MTU values
+        set_ether_mtu(config, 'eth0', DEFAULT_ETH_MTU)
 
     # enable SSH service
     set_config_ssh(config)
