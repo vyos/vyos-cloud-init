@@ -466,7 +466,7 @@ def set_config_interfaces_v1(config, iface_config: dict):
             config.set_tag(['interfaces', 'ethernet'])
 
         # configre MTU
-        if 'mtu' in iface_config:
+        if 'mtu' in iface_config and iface_config['mtu'] is not None:
             set_ether_mtu(config, iface_name, iface_config['mtu'])
         # We still need to set default MTU for Ethernet, for compatibility reasons
         else:
