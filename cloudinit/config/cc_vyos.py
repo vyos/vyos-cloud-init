@@ -1081,6 +1081,10 @@ def handle(name, cfg, cloud, log, _args):
         file_name = cfg_file_name
 
     logger.debug("Using configuration file: {}".format(file_name))
+    # We must run all migrations on the config before Cloud-init will modify it
+    # Otherwise, regardless of proper syntax for the current version, migrations will be re-run with unpredictable result
+    logger.debug("Running migrations for: {}".format(file_name))
+    run(['/usr/libexec/vyos/run-config-migration.py', file_name])
     with open(file_name, 'r') as f:
         config_file = f.read()
     config = ConfigTree(config_file)
