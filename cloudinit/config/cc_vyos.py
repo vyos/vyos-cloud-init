@@ -166,11 +166,11 @@ def set_config_ovf(config, ovf_environment):
     # Configure NTP servers
     if ntp_string:
         ntp_list = list(ntp_string.replace(' ', '').split(','))
-        config.delete(['system', 'ntp'])
+        config.delete(['service', 'ntp'])
         for server in ntp_list:
             logger.debug("Configuring NTP server: {}".format(server))
-            config.set(['system', 'ntp', 'server'], value=server, replace=False)
-            config.set_tag(['system', 'ntp', 'server'])
+            config.set(['service', 'ntp', 'server'], value=server, replace=False)
+            config.set_tag(['service', 'ntp', 'server'])
 
     # Configure API
     if api_key:
@@ -179,8 +179,7 @@ def set_config_ovf(config, ovf_environment):
         config.set_tag(['service', 'https', 'api', 'keys', 'id'])
     if api_key and api_port:
         logger.debug("Configuring HTTP API port: {}".format(api_port))
-        config.set(['service', 'https', 'listen-address', '0.0.0.0', 'listen-port'], value=api_port, replace=True)
-        config.set_tag(['service', 'https', 'listen-address'])
+        config.set(['service', 'https', 'port'], value=api_port, replace=True)
     if api_key and api_debug != 'False':
         logger.debug("Enabling HTTP API debug")
         config.set(['service', 'https', 'api', 'debug'], replace=True)
@@ -340,9 +339,7 @@ def set_name_server(config, name_server: str) -> None:
 def set_domain_search(config, domain_search: str) -> None:
     try:
         logger.debug("Configuring DNS search domain: {}".format(domain_search))
-        config.set(['system', 'domain-search', 'domain'],
-                   value=domain_search,
-                   replace=False)
+        config.set(['system', 'domain-search'], value=domain_search, replace=False)
     except Exception as err:
         logger.error("Impossible to configure a name-server: {}".format(err))
 
