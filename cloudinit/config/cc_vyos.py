@@ -23,7 +23,7 @@
 import re
 import ipaddress
 from pathlib import Path
-from subprocess import run, DEVNULL
+from subprocess import run
 from uuid import uuid4
 from cloudinit import log as logging
 from cloudinit.ssh_util import AuthKeyLineParser
@@ -992,33 +992,6 @@ def set_config_hostname(config, hostname, fqdn):
             logger.error("Failed to configure domain-name: {}".format(err))
 
 
-# cleanup network interface config file added by cloud-init
-def network_cleanup():
-    logger.debug("Cleaning up network configuration applied by Cloud-Init")
-    net_config_file = Path('/etc/network/interfaces.d/50-cloud-init')
-    if net_config_file.exists():
-        logger.debug(f"Configuration file {net_config_file} was found")
-        try:
-            # get a list of interfaces that need to be deconfigured
-            configured_ifaces = run(
-                ['ifquery', '-l', '-X', 'lo', '-i', net_config_file],
-                capture_output=True).stdout.decode().splitlines()
-            if configured_ifaces:
-                for iface in configured_ifaces:
-                    logger.debug(f"Deconfiguring interface: {iface}")
-                    run(['ifdown', iface], stdout=DEVNULL)
-            # delete the file
-            net_config_file.unlink()
-            logger.debug(f"Configuration file {net_config_file} was removed")
-        except Exception as err:
-            logger.error(f"Failed to cleanup network configuration: {err}")
-
-    udev_rules_file = Path('/etc/udev/rules.d/70-persistent-net.rules')
-    if udev_rules_file.exists():
-        logger.debug(f"Configuration file {udev_rules_file} was removed")
-        udev_rules_file.unlink()
-
-
 # main config handler
 def handle(name, cfg, cloud, log, _args):
     logger.debug("Cloud-init config: {}".format(cfg))
@@ -1182,6 +1155,3 @@ def handle(name, cfg, cloud, log, _args):
             logger.debug("Configuration file saved: {}".format(cfg_file_name))
     except Exception as e:
         logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
-
-    # since we already have a config file, it is a time to clean up what Cloud-init may left
-    network_cleanup()
