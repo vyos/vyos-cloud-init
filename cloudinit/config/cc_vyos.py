@@ -91,6 +91,11 @@ def set_ssh_login(config, user, key_string):
         logger.info("Generating UUID for an SSH key because a comment is empty or unacceptable by CLI")
         key_parsed.comment = "cloud-init-{}".format(uuid4())
 
+    # check if a key with the same comment already exists
+    if config.exists(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment]):
+        logger.debug("Generating UUID for an SSH key because a public key with comment {} already exists for user {}".format(key_parsed.comment, user))
+        key_parsed.comment = "cloud-init-{}".format(uuid4())
+
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'key'], value=key_parsed.base64, replace=True)
     config.set(['system', 'login', 'user', user, 'authentication', 'public-keys', key_parsed.comment, 'type'], value=key_parsed.keytype, replace=True)
     if key_parsed.options:
