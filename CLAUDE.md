@@ -48,7 +48,3 @@ Mirror twin: `VyOS-Networks/vyos-cloud-init`. Mirror pipeline status varies — 
 - Keep VyOS-specific changes minimal and clearly delineated to ease upstream merges.
 - After merging a PR, the `trigger-rebuild-repo-package.yml` workflow fires a REST `workflow_dispatch` into `$REMOTE_OWNER/vyos-build-packages` (REMOTE_OWNER = VyOS-Networks) to rebuild the Debian package as `vyosbot`.
 - Cloud-init's upstream test suite is heavy; running `pytest tests/unittests` is usually sufficient for small VyOS-side patches.
-
----
-
-This file is mirrored on Confluence: [`vyos/vyos-cloud-init`](https://internal.confluence.vyos.com/wiki/spaces/VYOS/pages/818479480). The Confluence page also carries the per-repo audit data (settings, workflows, secret counts, hygiene) that complements this CLAUDE.md. Edit either side; resync via the documentation pipeline.
