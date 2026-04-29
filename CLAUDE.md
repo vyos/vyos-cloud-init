@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 ## Project purpose
-VyOS-flavored fork of canonical `cloud-init`. Adds VyOS datasource handlers and userdata processors so that VyOS images can self-configure on first boot in cloud environments (AWS, Azure, GCP, OpenStack, etc.).
+VyOS-flavored fork of canonical `cloud-init`. Configures VyOS images on first boot in cloud environments (AWS, Azure, GCP, OpenStack, etc.) using upstream datasource handlers; VyOS-specific datasource and userdata-processor additions are intended future work.
 
 ## Tech stack
 - Python (≥3.x). Upstream `cloud-init` codebase.
@@ -22,10 +22,11 @@ make                                # see in-repo Makefile targets
 - `cloudinit/` — core Python package (datasources, handlers, modules).
 - `config/` — default config files installed under `/etc/cloud/`.
 - `templates/` — Jinja2 templates rendered at boot.
-- `systemd/`, `sysvinit/`, `udev/`, `bash_completion/` — init system glue.
+- `systemd/`, `sysvinit/`, `upstart/`, `udev/`, `bash_completion/` — init system glue.
 - `tests/` — unit + integration tests.
 - `tools/` — helper scripts.
-- `packages/` — packaging templates (Debian, RPM, snap).
+- `packages/` — packaging templates (Debian, RPM/SUSE, bddeb/brpm scripts).
+- `snapcraft.yaml` — snap packaging descriptor (repo root).
 - `doc/` — Sphinx documentation source.
 - `setup.py`, `pyproject.toml`, `tox.ini`, `conftest.py`.
 - Vendored upstream license files: `LICENSE-Apache2.0`, `LICENSE-GPLv3`.
