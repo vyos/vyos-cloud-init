@@ -4,11 +4,15 @@ on:
   schedule:
   - cron: "0 0 * * *"  # Daily @ 00:00
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
   stale:
 
     runs-on: ubuntu-latest
-
+    if: github.repository_owner == 'vyos'
     steps:
     - uses: actions/stale@v10
       with:
