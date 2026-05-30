@@ -29,7 +29,7 @@ jobs:
 
   trigger-build:
     needs: setup-vars
-    uses: vyos/.github/.github/workflows/trigger-rebuild-repo-package.yml@current
+    uses: vyos/.github/.github/workflows/trigger-rebuild-repo-package.yml@production
     with:
       branch: ${{ needs.setup-vars.outputs.BRANCH }}
       package_name: ${{ needs.setup-vars.outputs.PACKAGE_NAME }}
