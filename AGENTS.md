@@ -38,9 +38,9 @@ make                                # see in-repo Makefile targets
 
 ## Conventions
 - Commit/PR title: `component: T12345: description` (Phorge task ID at https://vyos.dev). Enforced via inherited reusables.
-- Workflows: `pr-mirror-repo-sync.yml`, `trigger-rebuild-repo-package.yml`, `cla-check.yml`, `stale.yml` (uses `vyos/.github@current` reusables).
+- Workflows: `pr-mirror-repo-sync.yml`, `trigger-rebuild-repo-package.yml`, `cla-check.yml`, `stale.yml` (uses `vyos/.github@production` reusables).
 - License: dual Apache-2.0 / GPL-3 (inherited from upstream `cloud-init`).
-- Default branch: `current`. Pull from upstream `canonical/cloud-init` via merge or rebase, preserve VyOS-specific deltas.
+- Default branch: `rolling`. Pull from upstream `canonical/cloud-init` via merge or rebase, preserve VyOS-specific deltas.
 
 ## Notes for future contributors
 - Keep VyOS-specific changes minimal and clearly delineated to ease upstream merges.
