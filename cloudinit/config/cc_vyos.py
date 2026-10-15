@@ -38,6 +38,13 @@ try:
     from vyos.configtree import ConfigTree
 except ImportError as err:
     print(f'The module cannot be imported: {err}')
+# Images which name interfaces from an interface map (T3871) have no hw-id
+# node - the boot config loader rejects one. On Azure a MAC given for an
+# interface is recorded in that map instead, and the interface is named from
+# it. Elsewhere hw-id is written as before (T3871: other platforms open).
+# loaded only when the map is used (Azure), so no other platform imports it
+ifname_store = None
+INTERFACE_MAP_RESOLVER = '/usr/libexec/vyos/system/vyos-net-name-resolve.py'
 
 # configure logging
 logger = logging.getLogger(__name__)
@@ -47,6 +54,135 @@ frequency = PER_INSTANCE
 
 # default values
 DEFAULT_ETH_MTU = 1500
+
+
+# interface name -> MAC, recorded in the interface map instead of as hw-id
+mac_bindings = {}
+# set per run by handle(): an Azure instance on an image with the map
+use_interface_map = False
+
+
+def interface_map_image() -> bool:
+    """Does this image name interfaces from the interface map? Decided by
+    the resolver being installed, so a broken import is not taken for an
+    image without the map."""
+    return Path(INTERFACE_MAP_RESOLVER).exists()
+
+
+def interface_map_wanted(dsname: str) -> bool:
+    """Record MAC bindings in the interface map for this datasource? On
+    Azure only (T3871): a NIC there has nothing but its MAC. Whether other
+    platforms want it is open."""
+    return dsname == 'Azure' and interface_map_image()
+
+
+def present_macs() -> set:
+    """Addresses of the interfaces on this system"""
+    macs = set()
+    for entry in Path('/sys/class/net').glob('*/address'):
+        try:
+            macs.add(entry.read_text().strip().lower())
+        except OSError:
+            pass
+    return macs
+
+
+def set_ether_mac(config, iface_name: str, mac: str) -> None:
+    logger.debug("Setting MAC for {}: {}".format(iface_name, mac))
+    if use_interface_map:
+        mac_bindings[iface_name] = mac.lower()
+        return
+    config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=mac,
+               replace=True)
+    config.set_tag(['interfaces', 'ethernet'])
+
+
+def select_interface_map(dsname: str) -> None:
+    """Decide for this run whether MAC bindings go to the interface map, and
+    import its module only then, so no other platform depends on it"""
+    global use_interface_map, ifname_store
+    use_interface_map = interface_map_wanted(dsname)
+    if use_interface_map:
+        try:
+            from vyos.ifconfig import ifname_store
+        except ImportError as e:
+            logger.error("Cannot import the interface map module: {}".format(e))
+
+
+def write_config(config, cfg_file_name: str) -> bool:
+    """Save the configuration, then the bindings its names rely on - never
+    the bindings without the configuration"""
+    try:
+        with open(cfg_file_name, 'w') as f:
+            f.write(config.to_string())
+            logger.debug("Configuration file saved: {}".format(cfg_file_name))
+    except Exception as e:
+        logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
+        return False
+    save_mac_bindings(mac_bindings)
+    return True
+
+
+def save_mac_bindings(bindings: dict) -> None:
+    """Record name-to-MAC bindings in the interface map, so the NIC the
+    platform meant comes up under the name the configuration uses.
+
+    A name the map has for a NIC still on this system is left alone: this
+    runs again on every new instance - an image upgrade is one - and a NIC
+    that did not change keeps its name and configuration. A name whose
+    recorded NIC is gone is rebound to the NIC the platform lists for it, so a
+    disk brought up on new NICs (a restore as a new VM, a failover) gets the
+    names the platform lists its new NICs in.
+
+    When the NIC the platform lists for a vacant name already holds another
+    name (a VM rebuilt with an original NIC at another position), nothing here
+    says which name it should have. The vacant name is recorded as missing, so
+    no new NIC is given its configuration at the next boot either.
+    """
+    if not bindings:
+        return
+    if ifname_store is None:
+        logger.error("This image names interfaces from the interface map, but "
+                     "vyos.ifconfig.ifname_store cannot be imported: MAC "
+                     "bindings for {} were not recorded".format(
+                         ', '.join(sorted(bindings))))
+        return
+    store = ifname_store.load_store()
+    entries = store['interfaces']
+    present = present_macs()
+    for name, mac in sorted(bindings.items()):
+        key = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
+        recorded = store['hardware'].get(name, '').lower()
+        if name in entries and (not recorded or recorded in present):
+            logger.debug("Interface map keeps {} for {}".format(
+                name, recorded or entries[name]))
+            continue
+        # the NIC's own name, if it has one: by its MAC key, or by its
+        # recorded address - a lone Hyper-V NIC is keyed on the VMBus path
+        holder = [n for n, k in entries.items() if n != name and (
+            k == key or store['hardware'].get(n, '').lower() == mac)]
+        if holder:
+            if name in entries:
+                logger.warning("Interface map: the platform lists {} as {}, "
+                               "but it is {} here; {} stays reserved and is "
+                               "not given to a new NIC".format(
+                                   mac, name, holder[0], name))
+                store['absent'] = sorted(set(store.get('absent', [])) | {name})
+            else:
+                logger.debug("Interface map has {} under another name, "
+                             "kept".format(mac))
+            continue
+        if name in entries:
+            logger.debug("Interface map: {} was on {}, which is gone; "
+                         "rebound to {}".format(name, recorded, mac))
+        entries[name] = key
+        store['hardware'][name] = mac
+    try:
+        if not ifname_store.save_store(store):
+            logger.warning("Interface map not written: the configuration "
+                           "volume is not mounted")
+    except OSError as e:
+        logger.error("Failed to write the interface map: {}".format(e))
 
 
 class VyosError(Exception):
@@ -468,9 +604,7 @@ def set_config_interfaces_v1(config, iface_config: dict):
 
         # configre MAC
         if 'mac_address' in iface_config:
-            logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['mac_address']))
-            config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['mac_address'], replace=True)
-            config.set_tag(['interfaces', 'ethernet'])
+            set_ether_mac(config, iface_name, iface_config['mac_address'])
 
         # configre MTU
         if 'mtu' in iface_config and iface_config['mtu'] is not None:
@@ -957,12 +1091,7 @@ def config_net_v2_ethernet(config, iface_name: str,
 
     # configure MAC
     if 'match' in iface_config and 'macaddress' in iface_config['match']:
-        logger.debug("Setting MAC for {}: {}".format(
-            iface_name, iface_config['match']['macaddress']))
-        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'],
-                   value=iface_config['match']['macaddress'],
-                   replace=True)
-        config.set_tag(['interfaces', 'ethernet'])
+        set_ether_mac(config, iface_name, iface_config['match']['macaddress'])
 
 
 # configure interface from networking config version 2
@@ -1005,10 +1134,12 @@ def set_config_hostname(config, hostname, fqdn):
 # main config handler
 def handle(name, cfg, cloud, log, _args):
     logger.debug("Cloud-init config: {}".format(cfg))
+    mac_bindings.clear()
     # fetch all required data from Cloud-init
     # Datasource name
     dsname = cloud.datasource.dsname
     logger.debug("Datasource: {}".format(dsname))
+    select_interface_map(dsname)
     # Metadata (datasource specific)
     metadata_ds = cloud.datasource.metadata
     logger.debug("Meta-Data ds: {}".format(metadata_ds))
@@ -1158,10 +1289,6 @@ def handle(name, cfg, cloud, log, _args):
     else:
         set_config_hostname(config, 'vyos', None)
 
-    # save a new configuration file
-    try:
-        with open(cfg_file_name, 'w') as f:
-            f.write(config.to_string())
-            logger.debug("Configuration file saved: {}".format(cfg_file_name))
-    except Exception as e:
-        logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
+    # save a new configuration file, then the bindings it relies on; nothing
+    # follows in this module, so a failed write needs no early return here
+    write_config(config, cfg_file_name)
