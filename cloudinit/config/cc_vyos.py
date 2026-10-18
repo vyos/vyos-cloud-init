@@ -162,6 +162,18 @@ def name_order(name: str) -> tuple:
     return (match.group(1), int(match.group(2))) if match else (name, -1)
 
 
+def map_holder(store: dict, mac: str):
+    """The name the interface map gives the NIC with this MAC, if any: by its
+    MAC key, or by its recorded address - a lone Hyper-V NIC is keyed on the
+    VMBus path"""
+    key = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
+    hardware = store['hardware']
+    for name, recorded_key in store['interfaces'].items():
+        if recorded_key == key or hardware.get(name, '').lower() == mac:
+            return name
+    return None
+
+
 def plan_interface_names(platform: dict, store: dict, present: set,
                          unbound: set = frozenset()) -> dict:
     """Decide the name of each NIC network-config lists with a MAC, and
@@ -188,15 +200,6 @@ def plan_interface_names(platform: dict, store: dict, present: set,
     hardware = store['hardware']
     names = {}
 
-    def holder_of(mac):
-        # by its MAC key, or by its recorded address - a lone Hyper-V NIC
-        # is keyed on the VMBus path
-        key = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
-        for name, recorded_key in entries.items():
-            if recorded_key == key or hardware.get(name, '').lower() == mac:
-                return name
-        return None
-
     def bind(platform_name, name, mac):
         entries[name] = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
         hardware[name] = mac
@@ -207,7 +210,7 @@ def plan_interface_names(platform: dict, store: dict, present: set,
                                      key=lambda item: name_order(item[0])):
         # also when the NIC is not in sysfs yet: it is the same NIC, and a
         # second name for its MAC would leave one of the two without a NIC
-        held = holder_of(mac)
+        held = map_holder(store, mac)
         if held:
             names[platform_name] = held
         else:
@@ -326,6 +329,57 @@ def map_interface_names(netcfg: dict) -> dict:
                        "and its bond, bridge and VLAN settings, are not "
                        "applied".format(name, name))
     return rename_interfaces(drop_interfaces(netcfg, clash), names)
+
+
+def boot_interface_names(netcfg: dict, dsname: str) -> dict:
+    """network-config for the renaming cloud-init does itself at every boot,
+    before this module runs. On an image with the interface map a NIC the map
+    names is renamed to that name, not to the one the platform's order gives
+    it: once a NIC is removed, Azure lists the NICs after it one place
+    earlier. A NIC the map does not name keeps the platform's name, unless a
+    NIC the map names holds it or the map keeps it for a removed NIC: then it
+    gets the lowest name the map does not record, the name the naming pass
+    gives it, and is up under that name before the pass runs. Left as it is,
+    it would keep whatever name the kernel gave it, which can be the name of
+    a removed NIC. The map is not changed here."""
+    if not interface_map_wanted(dsname):
+        return netcfg
+    platform = netcfg_macs(netcfg)
+    if not platform:
+        return netcfg
+    from vyos.ifconfig import ifname_store as store_module
+    store = store_module.load_store()
+    held = {name: map_holder(store, mac) for name, mac in platform.items()}
+    names = {name: held[name] for name in held if held[name]}
+    taken = set(names.values())
+    absent = set(store.get('absent', []))
+    unnamed = [name for name in platform if not held[name]]
+    moved = sorted((name for name in unnamed
+                    if name in taken or name in absent), key=name_order)
+    used = set(store['interfaces']) | taken | {
+        name for name in unnamed if name not in moved}
+    for name in moved:
+        index = 0
+        while 'eth{}'.format(index) in used:
+            index += 1
+        names[name] = 'eth{}'.format(index)
+        used.add(names[name])
+    plan = ['{} -> {}'.format(name, names.get(name, name))
+            for name in sorted(platform, key=name_order)]
+    logger.info("Interface map: {} entries; renaming at boot: {}".format(
+        len(store['interfaces']), ', '.join(plan)))
+
+    netcfg = copy.deepcopy(netcfg)
+    if netcfg.get('version') == 1:
+        for item in netcfg.get('config', []):
+            name = item.get('name')
+            if item.get('type') == 'physical' and name in platform:
+                item['name'] = names.get(name, name)
+    elif netcfg.get('version') == 2:
+        for name, item in netcfg.get('ethernets', {}).items():
+            if name in platform and 'set-name' in item:
+                item['set-name'] = names.get(name, item['set-name'])
+    return netcfg
 
 
 def drop_interfaces(netcfg: dict, drop: set) -> dict:

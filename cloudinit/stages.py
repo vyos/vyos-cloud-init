@@ -845,9 +845,24 @@ class Init(object):
     def _apply_netcfg_names(self, netcfg):
         try:
             LOG.debug("applying net config names for %s", netcfg)
-            self.distro.apply_network_config_names(netcfg)
+            self.distro.apply_network_config_names(
+                self._vyos_netcfg_names(netcfg)
+            )
         except Exception as e:
             LOG.warning("Failed to rename devices: %s", e)
+
+    def _vyos_netcfg_names(self, netcfg):
+        """VyOS (T3871): on an image with the interface map, rename to the
+        names the map gives, as cc_vyos.boot_interface_names decides"""
+        try:
+            from cloudinit.config import cc_vyos
+
+            return cc_vyos.boot_interface_names(
+                netcfg, getattr(self.datasource, "dsname", None)
+            )
+        except Exception as e:
+            LOG.warning("Interface map not used for renaming: %s", e)
+            return netcfg
 
     def _get_per_boot_network_semaphore(self):
         return namedtuple("Semaphore", "semaphore args")(

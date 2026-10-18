@@ -654,3 +654,182 @@ class TestMacBindings(CiTestCase):
             )
         self.assertIsNone(fake.saved)
         warning.assert_called_once()
+
+
+def v2(nics):
+    """network-config v2 as Azure gives it: set-name by the order Azure
+    lists the NICs in"""
+    return {
+        "version": 2,
+        "ethernets": {
+            name: {
+                "dhcp4": True,
+                "match": {"macaddress": mac, "driver": "hv_netvsc"},
+                "set-name": name,
+            }
+            for name, mac in nics.items()
+        },
+    }
+
+
+def set_names(netcfg):
+    return {
+        name: item.get("set-name")
+        for name, item in netcfg["ethernets"].items()
+    }
+
+
+class TestBootRenames(CiTestCase):
+    """cloud-init's own renaming at every boot, before cc_vyos runs"""
+
+    def _boot(self, fake, netcfg, dsname="Azure"):
+        import sys
+        import types
+
+        package = types.ModuleType("vyos.ifconfig")
+        package.ifname_store = fake
+        with mock.patch.dict(
+            sys.modules, {"vyos.ifconfig": package}
+        ), mock.patch.object(
+            cc_vyos, "interface_map_image", return_value=True
+        ):
+            return cc_vyos.boot_interface_names(netcfg, dsname)
+
+    def test_a_nic_keeps_its_name_when_one_before_it_is_removed(self):
+        # measured on Azure: LAN1 (C, eth2) removed, so Azure lists LAN2
+        # (D, eth3) third and network-config says set-name eth2 for it
+        a, b, c, d = (
+            "00:0d:3a:27:84:8f",
+            "00:0d:3a:27:8d:35",
+            "00:0d:3a:27:8d:da",
+            "00:0d:3a:27:8b:58",
+        )
+        fake = FakeStore(
+            store({"eth0": a, "eth1": b, "eth2": c, "eth3": d})["interfaces"],
+            {"eth0": a, "eth1": b, "eth2": c, "eth3": d},
+        )
+        netcfg = v2({"eth0": a, "eth1": b, "eth2": d})
+        renamed = self._boot(fake, netcfg)
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth3"},
+            set_names(renamed),
+        )
+        # what cloud-init renames by
+        from cloudinit.net import extract_physdevs
+
+        self.assertIn(
+            [d, "eth3", "hv_netvsc", None], extract_physdevs(renamed)
+        )
+        # the configuration it renders from is not changed
+        self.assertEqual("eth2", netcfg["ethernets"]["eth2"]["set-name"])
+
+    def test_a_first_boot_renames_as_the_platform_lists(self):
+        netcfg = v2(AZURE)
+        self.assertEqual(netcfg, self._boot(FakeStore(), netcfg))
+
+    def test_a_nic_whose_platform_name_is_held_gets_a_free_name(self):
+        # the map names A eth1; Azure lists A as eth0 and a NIC the map does
+        # not know (B) as eth1, which A holds
+        a, b = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b"
+        fake = FakeStore({"eth1": key(a)}, {"eth1": a})
+        renamed = self._boot(fake, v2({"eth0": a, "eth1": b}))
+        self.assertEqual({"eth0": "eth1", "eth1": "eth0"}, set_names(renamed))
+
+    def test_a_new_nic_listed_under_a_held_name_skips_a_removed_nic_s(self):
+        # measured on Azure (X12): D (eth3) removed and a boot taken; the new
+        # NIC X is listed third, under eth2, which C holds - it must not keep
+        # the name the kernel gave it (eth3, D's)
+        a, b, c, d, x = (
+            "00:0d:3a:aa:00:0a",
+            "00:0d:3a:aa:00:0b",
+            "00:0d:3a:aa:00:0c",
+            "00:0d:3a:aa:00:0d",
+            "00:0d:3a:aa:00:0f",
+        )
+        names = {"eth0": a, "eth1": b, "eth2": c, "eth3": d}
+        fake = FakeStore(store(names)["interfaces"], names)
+        fake.store["absent"] = ["eth3"]
+        renamed = self._boot(
+            fake, v2({"eth0": a, "eth1": b, "eth2": x, "eth3": c})
+        )
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth4", "eth3": "eth2"},
+            set_names(renamed),
+        )
+
+    def test_a_new_nic_takes_a_free_platform_name(self):
+        # a replaced NIC: C (eth2) is gone and Azure lists the new X as eth2
+        a, c, x = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0c", "00:0d:3a:aa:00:0f"
+        fake = FakeStore(
+            store({"eth0": a, "eth2": c})["interfaces"], {"eth0": a, "eth2": c}
+        )
+        renamed = self._boot(fake, v2({"eth0": a, "eth2": x}))
+        self.assertEqual({"eth0": "eth0", "eth2": "eth2"}, set_names(renamed))
+
+    def test_a_new_nic_does_not_take_a_removed_nic_s_name(self):
+        # D (eth3) was removed and a boot taken, so eth3 is absent; a new NIC
+        # X is then listed in D's place
+        a, b, c, d, x, y = (
+            "00:0d:3a:aa:00:0a",
+            "00:0d:3a:aa:00:0b",
+            "00:0d:3a:aa:00:0c",
+            "00:0d:3a:aa:00:0d",
+            "00:0d:3a:aa:00:0f",
+            "00:0d:3a:aa:00:10",
+        )
+        names = {"eth0": a, "eth1": b, "eth2": c, "eth3": d}
+        fake = FakeStore(store(names)["interfaces"], names)
+        fake.store["absent"] = ["eth3"]
+        renamed = self._boot(
+            fake, v2({"eth0": a, "eth1": b, "eth2": c, "eth3": x})
+        )
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth2", "eth3": "eth4"},
+            set_names(renamed),
+        )
+        # two of them each get their own name
+        fake.store["absent"] = ["eth2", "eth3"]
+        renamed = self._boot(
+            fake, v2({"eth0": a, "eth1": b, "eth2": x, "eth3": y})
+        )
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth4", "eth3": "eth5"},
+            set_names(renamed),
+        )
+
+    def test_network_config_v1_is_renamed_too(self):
+        a, b = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b"
+        fake = FakeStore(
+            store({"eth0": b, "eth1": a})["interfaces"], {"eth0": b, "eth1": a}
+        )
+        renamed = self._boot(fake, v1({"eth0": a, "eth1": b}))
+        self.assertEqual(
+            ["eth1", "eth0"], [item["name"] for item in renamed["config"]]
+        )
+
+    def test_other_datasources_are_renamed_as_before(self):
+        netcfg = v2(AZURE)
+        fake = mock.Mock()
+        self.assertIs(netcfg, self._boot(fake, netcfg, dsname="NoCloud"))
+        fake.load_store.assert_not_called()
+
+    def test_init_renames_by_the_map_and_falls_back_on_error(self):
+        from cloudinit.stages import Init
+
+        init = Init.__new__(Init)
+        init._distro = mock.Mock()
+        init.datasource = mock.Mock(dsname="Azure")
+        netcfg, mapped = v2(AZURE), {"version": 2, "ethernets": {}}
+        with mock.patch.object(
+            cc_vyos, "boot_interface_names", return_value=mapped
+        ) as boot:
+            init._apply_netcfg_names(netcfg)
+        boot.assert_called_once_with(netcfg, "Azure")
+        init.distro.apply_network_config_names.assert_called_once_with(mapped)
+
+        init.distro.reset_mock()
+        with mock.patch.object(
+            cc_vyos, "boot_interface_names", side_effect=OSError("x")
+        ):
+            init._apply_netcfg_names(netcfg)
+        init.distro.apply_network_config_names.assert_called_once_with(netcfg)
