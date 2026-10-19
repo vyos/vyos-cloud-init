@@ -337,7 +337,8 @@ def boot_interface_names(netcfg: dict, dsname: str) -> dict:
     names is renamed to that name, not to the one the platform's order gives
     it: once a NIC is removed, Azure lists the NICs after it one place
     earlier. A NIC the map does not name keeps the platform's name, unless a
-    NIC the map names holds it or the map keeps it for a removed NIC: then it
+    NIC the map names holds it - one network-config lists, or one still here
+    that it does not list - or the map keeps it for a removed NIC: then it
     gets the lowest name the map does not record, the name the naming pass
     gives it, and is up under that name before the pass runs. Left as it is,
     it would keep whatever name the kernel gave it, which can be the name of
@@ -353,6 +354,14 @@ def boot_interface_names(netcfg: dict, dsname: str) -> dict:
     names = {name: held[name] for name in held if held[name]}
     taken = set(names.values())
     absent = set(store.get('absent', []))
+    # a NIC still here that network-config does not list keeps its name too
+    present = present_macs()
+    for name in store['interfaces']:
+        recorded = store['hardware'].get(name, '').lower()
+        # no address on record (a lone NIC keyed on its path) is not one
+        # that is here: an interface without an address reads as ''
+        if recorded and recorded in present:
+            taken.add(name)
     unnamed = [name for name in platform if not held[name]]
     moved = sorted((name for name in unnamed
                     if name in taken or name in absent), key=name_order)

@@ -682,7 +682,7 @@ def set_names(netcfg):
 class TestBootRenames(CiTestCase):
     """cloud-init's own renaming at every boot, before cc_vyos runs"""
 
-    def _boot(self, fake, netcfg, dsname="Azure"):
+    def _boot(self, fake, netcfg, dsname="Azure", present=frozenset()):
         import sys
         import types
 
@@ -692,6 +692,8 @@ class TestBootRenames(CiTestCase):
             sys.modules, {"vyos.ifconfig": package}
         ), mock.patch.object(
             cc_vyos, "interface_map_image", return_value=True
+        ), mock.patch.object(
+            cc_vyos, "present_macs", return_value=set(present)
         ):
             return cc_vyos.boot_interface_names(netcfg, dsname)
 
@@ -796,6 +798,55 @@ class TestBootRenames(CiTestCase):
             {"eth0": "eth0", "eth1": "eth1", "eth2": "eth4", "eth3": "eth5"},
             set_names(renamed),
         )
+
+    def test_a_new_nic_does_not_take_the_name_of_an_unlisted_nic_here(self):
+        # Y (eth2) is still attached, but network-config does not list it
+        # (cloud-init's one-NIC fallback, for one); a new NIC X listed as
+        # eth2 gets a free name, as the naming pass gives it, not Y's
+        a, b, y, x = (
+            "00:0d:3a:aa:00:0a",
+            "00:0d:3a:aa:00:0b",
+            "00:0d:3a:aa:00:0c",
+            "00:0d:3a:aa:00:0f",
+        )
+        names = {"eth0": a, "eth1": b, "eth2": y}
+        fake = FakeStore(store(names)["interfaces"], names)
+        renamed = self._boot(
+            fake,
+            v2({"eth0": a, "eth1": b, "eth2": x}),
+            present={a, b, y, x},
+        )
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth3"},
+            set_names(renamed),
+        )
+        # once Y is gone, X may take eth2, as before
+        renamed = self._boot(
+            fake, v2({"eth0": a, "eth1": b, "eth2": x}), present={a, b, x}
+        )
+        self.assertEqual(
+            {"eth0": "eth0", "eth1": "eth1", "eth2": "eth2"},
+            set_names(renamed),
+        )
+
+    def test_an_unlisted_nic_recorded_in_upper_case_keeps_its_name(self):
+        a, y, x = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0c", "00:0d:3a:aa:00:0f"
+        names = {"eth0": a, "eth2": y}
+        fake = FakeStore(
+            store(names)["interfaces"], {"eth0": a, "eth2": y.upper()}
+        )
+        renamed = self._boot(
+            fake, v2({"eth0": a, "eth2": x}), present={a, y, x}
+        )
+        self.assertEqual({"eth0": "eth0", "eth2": "eth1"}, set_names(renamed))
+
+    def test_a_lone_nic_without_an_address_on_record_keeps_its_name(self):
+        # keyed on its VMBus path, no address recorded; an interface with
+        # no address (a tunnel) reads as '' in sysfs
+        a = "00:0d:3a:aa:00:0a"
+        fake = FakeStore({"eth0": "ID_PATH=acpi-MSFT1000:00"}, {})
+        renamed = self._boot(fake, v2({"eth0": a}), present={a, ""})
+        self.assertEqual({"eth0": "eth0"}, set_names(renamed))
 
     def test_network_config_v1_is_renamed_too(self):
         a, b = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b"
