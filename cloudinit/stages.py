@@ -843,13 +843,15 @@ class Init(object):
         )
 
     def _apply_netcfg_names(self, netcfg):
+        """Rename to the names netcfg gives, as _vyos_netcfg_names maps
+        them; return the network config under the names applied"""
+        netcfg = self._vyos_netcfg_names(netcfg)
         try:
             LOG.debug("applying net config names for %s", netcfg)
-            self.distro.apply_network_config_names(
-                self._vyos_netcfg_names(netcfg)
-            )
+            self.distro.apply_network_config_names(netcfg)
         except Exception as e:
             LOG.warning("Failed to rename devices: %s", e)
+        return netcfg
 
     def _vyos_netcfg_names(self, netcfg):
         """VyOS (T3871): on an image with the interface map, rename to the
@@ -922,8 +924,8 @@ class Init(object):
         # ensure all physical devices in config are present
         self.distro.networking.wait_for_physdevs(netcfg)
 
-        # apply renames from config
-        self._apply_netcfg_names(netcfg)
+        # apply renames from config, and render under the same names
+        netcfg = self._apply_netcfg_names(netcfg)
 
         # rendering config
         LOG.info(

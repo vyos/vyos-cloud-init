@@ -365,6 +365,49 @@ class TestInit(CiTestCase):
             net_cfg, bring_up=True
         )
 
+    @mock.patch("cloudinit.net.get_interfaces_by_mac")
+    @mock.patch("cloudinit.distros.ubuntu.Distro")
+    def test_apply_network_renders_under_the_names_applied(
+        self, m_ubuntu, m_macs
+    ):
+        """VyOS (T3871): the config is rendered under the names the
+        interface map renamed the NICs to, not the datasource's"""
+        net_cfg = {
+            "version": 2,
+            "ethernets": {
+                "eth0": {
+                    "match": {"macaddress": "42:42:42:42:42:42"},
+                    "set-name": "eth0",
+                }
+            },
+        }
+        mapped = {
+            "version": 2,
+            "ethernets": {
+                "eth0": {
+                    "match": {"macaddress": "42:42:42:42:42:42"},
+                    "set-name": "eth3",
+                }
+            },
+        }
+
+        def fake_network_config():
+            return net_cfg, NetworkConfigSource.ds
+
+        m_macs.return_value = {"42:42:42:42:42:42": "eth0"}
+        self.init._find_networking_config = fake_network_config
+        from cloudinit.config import cc_vyos
+
+        with mock.patch.object(
+            cc_vyos, "boot_interface_names", return_value=mapped
+        ):
+            self.init.apply_network_config(True)
+        self.init.distro.apply_network_config_names.assert_called_with(mapped)
+        self.init.distro.apply_network_config.assert_called_with(
+            mapped, bring_up=True
+        )
+        self.assertEqual("eth0", net_cfg["ethernets"]["eth0"]["set-name"])
+
     @mock.patch("cloudinit.distros.ubuntu.Distro")
     def test_apply_network_on_same_instance_id(self, m_ubuntu):
         """Only call distro.apply_network_config_names on same instance id."""

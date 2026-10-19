@@ -848,6 +848,61 @@ class TestBootRenames(CiTestCase):
         renamed = self._boot(fake, v2({"eth0": a}), present={a, ""})
         self.assertEqual({"eth0": "eth0"}, set_names(renamed))
 
+    def test_a_free_name_at_boot_skips_a_nic_listed_without_a_mac(self):
+        # eth0 reserved, eth1 = A; network-config lists eth0 = A, eth1 = B
+        # and an eth2 without a MAC: B gets eth3, as when the names are
+        # planned for a new instance, not the eth2 the other entry uses
+        a, b, r = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b", "00:0d:3a:aa:00:0e"
+        fake = FakeStore(
+            {"eth0": key(r), "eth1": key(a)}, {"eth0": r, "eth1": a}
+        )
+        fake.store["absent"] = ["eth0"]
+        netcfg = v2({"eth0": a, "eth1": b})
+        netcfg["ethernets"]["eth2"] = {"dhcp4": True}
+        renamed = self._boot(fake, netcfg)
+        self.assertEqual(
+            {"eth0": "eth1", "eth1": "eth3", "eth2": None},
+            set_names(renamed),
+        )
+
+    def test_v1_references_are_renamed_at_boot(self):
+        # what is rendered at boot follows the NICs it is renamed to
+        a, b = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b"
+        fake = FakeStore(
+            store({"eth0": b, "eth1": a})["interfaces"], {"eth0": b, "eth1": a}
+        )
+        netcfg = {
+            "version": 1,
+            "config": [
+                {"type": "physical", "name": "eth0", "mac_address": a},
+                {"type": "physical", "name": "eth1", "mac_address": b},
+                {
+                    "type": "bond",
+                    "name": "bond0",
+                    "bond_interfaces": ["eth0"],
+                    "params": {"bond-primary": "eth0"},
+                },
+                {"type": "vlan", "name": "eth0.5", "vlan_link": "eth0"},
+                {
+                    "type": "nameserver",
+                    "address": ["10.0.0.53"],
+                    "interface": "eth0",
+                },
+            ],
+        }
+        renamed = self._boot(fake, netcfg)
+        config = renamed["config"]
+        self.assertEqual(["eth1", "eth0"], [c["name"] for c in config[:2]])
+        self.assertEqual(["eth1"], config[2]["bond_interfaces"])
+        self.assertEqual("eth1", config[2]["params"]["bond-primary"])
+        self.assertEqual("eth1", config[3]["vlan_link"])
+        self.assertEqual("eth1", config[4]["interface"])
+        # and cloud-init can parse what it renders from
+        from cloudinit.net.network_state import parse_net_config_data
+
+        parse_net_config_data(renamed)
+        self.assertEqual("eth0", netcfg["config"][0]["name"])
+
     def test_network_config_v1_is_renamed_too(self):
         a, b = "00:0d:3a:aa:00:0a", "00:0d:3a:aa:00:0b"
         fake = FakeStore(

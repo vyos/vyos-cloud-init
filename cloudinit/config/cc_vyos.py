@@ -258,7 +258,8 @@ def plan_interface_names(platform: dict, store: dict, present: set,
 
 def rename_interfaces(netcfg: dict, names: dict) -> dict:
     """network-config with each interface name replaced as names says,
-    members of bonds and bridges and VLAN parents included"""
+    members of bonds and bridges, VLAN parents and per-interface
+    nameservers included"""
     def new(name):
         return names.get(name, name)
 
@@ -278,14 +279,17 @@ def rename_interfaces(netcfg: dict, names: dict) -> dict:
             params = item.get('params')
             if not isinstance(params, dict):
                 params = {}
-            if params.get('primary'):
-                params['primary'] = new(params['primary'])
+            for primary in ('primary', 'bond-primary'):
+                if params.get(primary):
+                    params[primary] = new(params[primary])
             for per_port in ('bridge_pathcost', 'bridge_portprio'):
                 # "<interface> <value>" entries
                 if isinstance(params.get(per_port), list):
                     params[per_port] = [new_port(e) for e in params[per_port]]
             if 'vlan_link' in item:
                 item['vlan_link'] = new(item['vlan_link'])
+            if item.get('type') == 'nameserver' and item.get('interface'):
+                item['interface'] = new(item['interface'])
     elif netcfg.get('version') == 2:
         if 'ethernets' in netcfg:
             netcfg['ethernets'] = {
@@ -333,8 +337,9 @@ def map_interface_names(netcfg: dict) -> dict:
 
 def boot_interface_names(netcfg: dict, dsname: str) -> dict:
     """network-config for the renaming cloud-init does itself at every boot,
-    before this module runs. On an image with the interface map a NIC the map
-    names is renamed to that name, not to the one the platform's order gives
+    before this module runs, and for the configuration it renders then.
+    On an image with the interface map a NIC the map names is renamed to
+    that name, not to the one the platform's order gives
     it: once a NIC is removed, Azure lists the NICs after it one place
     earlier. A NIC the map does not name keeps the platform's name, unless a
     NIC the map names holds it - one network-config lists, or one still here
@@ -365,7 +370,10 @@ def boot_interface_names(netcfg: dict, dsname: str) -> dict:
     unnamed = [name for name in platform if not held[name]]
     moved = sorted((name for name in unnamed
                     if name in taken or name in absent), key=name_order)
-    used = set(store['interfaces']) | taken | {
+    # a name network-config gives a NIC without a MAC is not free either,
+    # as when the names are planned for a new instance
+    unbound = netcfg_ethernets(netcfg) - set(platform)
+    used = set(store['interfaces']) | taken | unbound | {
         name for name in unnamed if name not in moved}
     for name in moved:
         index = 0
@@ -378,13 +386,11 @@ def boot_interface_names(netcfg: dict, dsname: str) -> dict:
     logger.info("Interface map: {} entries; renaming at boot: {}".format(
         len(store['interfaces']), ', '.join(plan)))
 
-    netcfg = copy.deepcopy(netcfg)
     if netcfg.get('version') == 1:
-        for item in netcfg.get('config', []):
-            name = item.get('name')
-            if item.get('type') == 'physical' and name in platform:
-                item['name'] = names.get(name, name)
-    elif netcfg.get('version') == 2:
+        # the NICs and what refers to them, as the configuration is rendered
+        return rename_interfaces(netcfg, names)
+    netcfg = copy.deepcopy(netcfg)
+    if netcfg.get('version') == 2:
         for name, item in netcfg.get('ethernets', {}).items():
             if name in platform and 'set-name' in item:
                 item['set-name'] = names.get(name, item['set-name'])
