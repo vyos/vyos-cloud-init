@@ -20,6 +20,7 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import copy
 import re
 import ipaddress
 from pathlib import Path
@@ -38,6 +39,13 @@ try:
     from vyos.configtree import ConfigTree
 except ImportError as err:
     print(f'The module cannot be imported: {err}')
+# Images which name interfaces from an interface map (T3871) have no hw-id
+# node - the boot config loader rejects one. On Azure a MAC given for an
+# interface is recorded in that map instead, and the interface is named from
+# it. Elsewhere hw-id is written as before (T3871: other platforms open).
+# loaded only when the map is used (Azure), so no other platform imports it
+ifname_store = None
+INTERFACE_MAP_RESOLVER = '/usr/libexec/vyos/system/vyos-net-name-resolve.py'
 
 # configure logging
 logger = logging.getLogger(__name__)
@@ -47,6 +55,396 @@ frequency = PER_INSTANCE
 
 # default values
 DEFAULT_ETH_MTU = 1500
+
+
+# the interface map as planned for this run, written after config.boot
+planned_map = None
+# set per run by handle(): an Azure instance on an image with the map
+use_interface_map = False
+
+
+def interface_map_image() -> bool:
+    """Does this image name interfaces from the interface map? Decided by
+    the resolver being installed, so a broken import is not taken for an
+    image without the map."""
+    return Path(INTERFACE_MAP_RESOLVER).exists()
+
+
+def interface_map_wanted(dsname: str) -> bool:
+    """Record MAC bindings in the interface map for this datasource? On
+    Azure only (T3871): a NIC there has nothing but its MAC. Whether other
+    platforms want it is open."""
+    return dsname == 'Azure' and interface_map_image()
+
+
+def present_macs() -> set:
+    """Addresses of the interfaces on this system"""
+    macs = set()
+    for entry in Path('/sys/class/net').glob('*/address'):
+        try:
+            macs.add(entry.read_text().strip().lower())
+        except OSError:
+            pass
+    return macs
+
+
+def set_ether_mac(config, iface_name: str, mac: str) -> None:
+    logger.debug("Setting MAC for {}".format(iface_name))
+    if use_interface_map:
+        # recorded in the interface map by map_interface_names()
+        return
+    config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=mac,
+               replace=True)
+    config.set_tag(['interfaces', 'ethernet'])
+
+
+def select_interface_map(dsname: str) -> None:
+    """Decide for this run whether MAC bindings go to the interface map, and
+    import its module only then, so no other platform depends on it"""
+    global use_interface_map, ifname_store, planned_map
+    planned_map = None
+    use_interface_map = interface_map_wanted(dsname)
+    if use_interface_map:
+        try:
+            from vyos.ifconfig import ifname_store
+        except ImportError as e:
+            logger.error("Cannot import the interface map module: {}".format(e))
+
+
+def write_config(config, cfg_file_name: str) -> bool:
+    """Save the configuration, then the interface map its names rely on -
+    never the map without the configuration"""
+    try:
+        with open(cfg_file_name, 'w') as f:
+            f.write(config.to_string())
+            logger.debug("Configuration file saved: {}".format(cfg_file_name))
+    except Exception as e:
+        logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
+        return False
+    if planned_map is not None:
+        try:
+            if not ifname_store.save_store(planned_map):
+                logger.warning("Interface map not written: the configuration "
+                               "volume is not mounted")
+        except OSError as e:
+            logger.error("Failed to write the interface map: {}".format(e))
+    return True
+
+
+def netcfg_macs(netcfg: dict) -> dict:
+    """The ethernet interfaces network-config names, with the MAC of each"""
+    macs = {}
+    if netcfg.get('version') == 1:
+        for item in netcfg.get('config', []):
+            if item.get('type') == 'physical' and item.get('mac_address'):
+                macs[item['name']] = item['mac_address'].lower()
+    elif netcfg.get('version') == 2:
+        for name, item in netcfg.get('ethernets', {}).items():
+            mac = (item.get('match') or {}).get('macaddress')
+            if mac:
+                macs[name] = mac.lower()
+    return macs
+
+
+def netcfg_ethernets(netcfg: dict) -> set:
+    """Every ethernet interface name network-config uses"""
+    if netcfg.get('version') == 1:
+        return {item['name'] for item in netcfg.get('config', [])
+                if item.get('type') == 'physical' and 'name' in item}
+    if netcfg.get('version') == 2:
+        return set(netcfg.get('ethernets', {}))
+    return set()
+
+
+def name_order(name: str) -> tuple:
+    """eth2 before eth10"""
+    match = re.fullmatch(r'(\D*)(\d+)', name)
+    return (match.group(1), int(match.group(2))) if match else (name, -1)
+
+
+def map_holder(store: dict, mac: str):
+    """The name the interface map gives the NIC with this MAC, if any: by its
+    MAC key, or by its recorded address - a lone Hyper-V NIC is keyed on the
+    VMBus path"""
+    key = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
+    hardware = store['hardware']
+    for name, recorded_key in store['interfaces'].items():
+        if recorded_key == key or hardware.get(name, '').lower() == mac:
+            return name
+    return None
+
+
+def plan_interface_names(platform: dict, store: dict, present: set,
+                         unbound: set = frozenset()) -> dict:
+    """Decide the name of each NIC network-config lists with a MAC, and
+    record it in the interface map (store, changed in place). Returns
+    {name network-config uses: name the NIC gets}; the configuration is
+    rendered under the second, so it lands on the NIC that has the name.
+
+    This runs on every new instance; an image upgrade is not one, since it
+    copies cloud-init's state:
+    - a NIC the map already names keeps that name, wherever the platform
+      lists it, so a re-run moves no name;
+    - a name whose recorded NIC is gone is rebound to the NIC the platform
+      lists for it, so a disk brought up on new NICs (a restore as a new VM,
+      a failover) gets the names the platform lists its new NICs in;
+    - a NIC whose platform name another NIC holds gets the lowest free name;
+      a name network-config gives a NIC without a MAC (unbound) is not free.
+
+    When the NIC the platform lists for a vacant name already holds another
+    name (a VM rebuilt with an original NIC at another position), the vacant
+    name is recorded as missing, so no new NIC is given what is left under it
+    at the next boot either.
+    """
+    entries = store['interfaces']
+    hardware = store['hardware']
+    names = {}
+
+    def bind(platform_name, name, mac):
+        entries[name] = 'ID_NET_NAME_MAC=enx' + mac.replace(':', '')
+        hardware[name] = mac
+        names[platform_name] = name
+
+    pending = []
+    for platform_name, mac in sorted(platform.items(),
+                                     key=lambda item: name_order(item[0])):
+        # also when the NIC is not in sysfs yet: it is the same NIC, and a
+        # second name for its MAC would leave one of the two without a NIC
+        held = map_holder(store, mac)
+        if held:
+            names[platform_name] = held
+        else:
+            pending.append((platform_name, mac))
+
+    taken = set(names.values())
+    leftover = []
+    for platform_name, mac in pending:
+        recorded = hardware.get(platform_name, '').lower()
+        if platform_name in taken:
+            leftover.append((platform_name, mac))
+        elif platform_name not in entries:
+            bind(platform_name, platform_name, mac)
+        elif recorded and recorded not in present:
+            logger.debug("Interface map: the NIC recorded for {} is gone; "
+                         "rebound".format(platform_name))
+            bind(platform_name, platform_name, mac)
+        else:
+            # held by a NIC still here, or by one with no address on record
+            leftover.append((platform_name, mac))
+        if platform_name in names:
+            taken.add(names[platform_name])
+
+    for platform_name, mac in leftover:
+        index = 0
+        while 'eth{}'.format(index) in set(entries) | set(unbound):
+            index += 1
+        logger.warning("Interface map: the name {} is held by another NIC; "
+                       "this NIC is named eth{}".format(platform_name, index))
+        bind(platform_name, 'eth{}'.format(index), mac)
+
+    for platform_name, mac in platform.items():
+        recorded = hardware.get(platform_name, '').lower()
+        if (platform_name in entries and platform_name not in names.values()
+                and recorded and recorded not in present):
+            logger.warning("Interface map: the NIC the platform lists as {} "
+                           "is {} here; {} stays reserved and is not given "
+                           "to a new NIC".format(
+                               platform_name, names[platform_name],
+                               platform_name))
+            store['absent'] = sorted(
+                set(store.get('absent', [])) | {platform_name})
+    return names
+
+
+def rename_interfaces(netcfg: dict, names: dict) -> dict:
+    """network-config with each interface name replaced as names says,
+    members of bonds and bridges, VLAN parents and per-interface
+    nameservers included"""
+    def new(name):
+        return names.get(name, name)
+
+    def new_port(entry):
+        # "<interface> <value>"; anything else is left for the renderer
+        parts = entry.split() if isinstance(entry, str) else []
+        return ' '.join([new(parts[0])] + parts[1:]) if parts else entry
+
+    netcfg = copy.deepcopy(netcfg)
+    if netcfg.get('version') == 1:
+        for item in netcfg.get('config', []):
+            if item.get('type') == 'physical' and 'name' in item:
+                item['name'] = new(item['name'])
+            for members in ('bond_interfaces', 'bridge_interfaces'):
+                if members in item:
+                    item[members] = [new(m) for m in item[members]]
+            params = item.get('params')
+            if not isinstance(params, dict):
+                params = {}
+            for primary in ('primary', 'bond-primary'):
+                if params.get(primary):
+                    params[primary] = new(params[primary])
+            for per_port in ('bridge_pathcost', 'bridge_portprio'):
+                # "<interface> <value>" entries
+                if isinstance(params.get(per_port), list):
+                    params[per_port] = [new_port(e) for e in params[per_port]]
+            if 'vlan_link' in item:
+                item['vlan_link'] = new(item['vlan_link'])
+            if item.get('type') == 'nameserver' and item.get('interface'):
+                item['interface'] = new(item['interface'])
+    elif netcfg.get('version') == 2:
+        if 'ethernets' in netcfg:
+            netcfg['ethernets'] = {
+                new(name): item for name, item in netcfg['ethernets'].items()}
+        for section in ('bonds', 'bridges'):
+            for item in netcfg.get(section, {}).values():
+                if 'interfaces' in item:
+                    item['interfaces'] = [new(m) for m in item['interfaces']]
+        for item in netcfg.get('vlans', {}).values():
+            if 'link' in item:
+                item['link'] = new(item['link'])
+    return netcfg
+
+
+def map_interface_names(netcfg: dict) -> dict:
+    """On an image with the interface map: plan the names of the NICs
+    network-config gives a MAC for, and return network-config under those
+    names. The map itself is written with config.boot."""
+    global planned_map
+    platform = netcfg_macs(netcfg)
+    if not platform:
+        return netcfg
+    if ifname_store is None:
+        logger.error("This image names interfaces from the interface map, but "
+                     "vyos.ifconfig.ifname_store cannot be imported: MAC "
+                     "bindings for {} were not recorded".format(
+                         ', '.join(sorted(platform))))
+        return netcfg
+    store = ifname_store.load_store()
+    unbound = netcfg_ethernets(netcfg) - set(platform)
+    names = plan_interface_names(platform, store, present_macs(), unbound)
+    planned_map = store
+    # a NIC the map already names may hold a name network-config also gives
+    # a NIC without a MAC; nothing says which NIC that entry meant, so its
+    # settings are not rendered over the named NIC's
+    clash = {name for name in unbound
+             if any(old != name and new == name for old, new in names.items())}
+    for name in sorted(clash):
+        logger.warning("Interface map: {} is the name of another NIC here; "
+                       "the settings network-config gives {} without a MAC, "
+                       "and its bond, bridge and VLAN settings, are not "
+                       "applied".format(name, name))
+    return rename_interfaces(drop_interfaces(netcfg, clash), names)
+
+
+def boot_interface_names(netcfg: dict, dsname: str) -> dict:
+    """network-config for the renaming cloud-init does itself at every boot,
+    before this module runs, and for the configuration it renders then.
+    On an image with the interface map a NIC the map names is renamed to
+    that name, not to the one the platform's order gives
+    it: once a NIC is removed, Azure lists the NICs after it one place
+    earlier. A NIC the map does not name keeps the platform's name, unless a
+    NIC the map names holds it - one network-config lists, or one still here
+    that it does not list - or the map keeps it for a removed NIC: then it
+    gets the lowest name the map does not record, the name the naming pass
+    gives it, and is up under that name before the pass runs. Left as it is,
+    it would keep whatever name the kernel gave it, which can be the name of
+    a removed NIC. The map is not changed here."""
+    if not interface_map_wanted(dsname):
+        return netcfg
+    platform = netcfg_macs(netcfg)
+    if not platform:
+        return netcfg
+    from vyos.ifconfig import ifname_store as store_module
+    store = store_module.load_store()
+    held = {name: map_holder(store, mac) for name, mac in platform.items()}
+    names = {name: held[name] for name in held if held[name]}
+    taken = set(names.values())
+    absent = set(store.get('absent', []))
+    # a NIC still here that network-config does not list keeps its name too
+    present = present_macs()
+    for name in store['interfaces']:
+        recorded = store['hardware'].get(name, '').lower()
+        # no address on record (a lone NIC keyed on its path) is not one
+        # that is here: an interface without an address reads as ''
+        if recorded and recorded in present:
+            taken.add(name)
+    unnamed = [name for name in platform if not held[name]]
+    moved = sorted((name for name in unnamed
+                    if name in taken or name in absent), key=name_order)
+    # a name network-config gives a NIC without a MAC is not free either,
+    # as when the names are planned for a new instance
+    unbound = netcfg_ethernets(netcfg) - set(platform)
+    used = set(store['interfaces']) | taken | unbound | {
+        name for name in unnamed if name not in moved}
+    for name in moved:
+        index = 0
+        while 'eth{}'.format(index) in used:
+            index += 1
+        names[name] = 'eth{}'.format(index)
+        used.add(names[name])
+    plan = ['{} -> {}'.format(name, names.get(name, name))
+            for name in sorted(platform, key=name_order)]
+    logger.info("Interface map: {} entries; renaming at boot: {}".format(
+        len(store['interfaces']), ', '.join(plan)))
+
+    if netcfg.get('version') == 1:
+        # the NICs and what refers to them, as the configuration is rendered
+        return rename_interfaces(netcfg, names)
+    netcfg = copy.deepcopy(netcfg)
+    if netcfg.get('version') == 2:
+        for name, item in netcfg.get('ethernets', {}).items():
+            if name in platform and 'set-name' in item:
+                item['set-name'] = names.get(name, item['set-name'])
+    return netcfg
+
+
+def drop_interfaces(netcfg: dict, drop: set) -> dict:
+    """network-config without the ethernet interfaces named in drop, and
+    without what refers to them by name: their bond and bridge memberships
+    and their VLANs, so nothing meant for them lands on another NIC"""
+    if not drop:
+        return netcfg
+
+    def port(entry):
+        # "<interface> <value>"
+        parts = entry.split() if isinstance(entry, str) else []
+        return parts[0] if parts else None
+
+    netcfg = copy.deepcopy(netcfg)
+    if netcfg.get('version') == 1:
+        kept = []
+        for item in netcfg.get('config', []):
+            if item.get('type') == 'physical' and item.get('name') in drop:
+                continue
+            if item.get('vlan_link') in drop:
+                continue
+            for members in ('bond_interfaces', 'bridge_interfaces'):
+                if isinstance(item.get(members), list):
+                    item[members] = [m for m in item[members]
+                                     if m not in drop]
+            params = item.get('params')
+            if isinstance(params, dict):
+                if params.get('primary') in drop:
+                    del params['primary']
+                for per_port in ('bridge_pathcost', 'bridge_portprio'):
+                    if isinstance(params.get(per_port), list):
+                        params[per_port] = [e for e in params[per_port]
+                                            if port(e) not in drop]
+            kept.append(item)
+        netcfg['config'] = kept
+    elif netcfg.get('version') == 2:
+        netcfg['ethernets'] = {
+            name: item for name, item in netcfg.get('ethernets', {}).items()
+            if name not in drop}
+        for section in ('bonds', 'bridges'):
+            for item in netcfg.get(section, {}).values():
+                if isinstance(item.get('interfaces'), list):
+                    item['interfaces'] = [m for m in item['interfaces']
+                                          if m not in drop]
+        if 'vlans' in netcfg:
+            netcfg['vlans'] = {
+                name: item for name, item in netcfg['vlans'].items()
+                if item.get('link') not in drop}
+    return netcfg
 
 
 class VyosError(Exception):
@@ -468,9 +866,7 @@ def set_config_interfaces_v1(config, iface_config: dict):
 
         # configre MAC
         if 'mac_address' in iface_config:
-            logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['mac_address']))
-            config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['mac_address'], replace=True)
-            config.set_tag(['interfaces', 'ethernet'])
+            set_ether_mac(config, iface_name, iface_config['mac_address'])
 
         # configre MTU
         if 'mtu' in iface_config and iface_config['mtu'] is not None:
@@ -957,12 +1353,7 @@ def config_net_v2_ethernet(config, iface_name: str,
 
     # configure MAC
     if 'match' in iface_config and 'macaddress' in iface_config['match']:
-        logger.debug("Setting MAC for {}: {}".format(
-            iface_name, iface_config['match']['macaddress']))
-        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'],
-                   value=iface_config['match']['macaddress'],
-                   replace=True)
-        config.set_tag(['interfaces', 'ethernet'])
+        set_ether_mac(config, iface_name, iface_config['match']['macaddress'])
 
 
 # configure interface from networking config version 2
@@ -1009,6 +1400,7 @@ def handle(name, cfg, cloud, log, _args):
     # Datasource name
     dsname = cloud.datasource.dsname
     logger.debug("Datasource: {}".format(dsname))
+    select_interface_map(dsname)
     # Metadata (datasource specific)
     metadata_ds = cloud.datasource.metadata
     logger.debug("Meta-Data ds: {}".format(metadata_ds))
@@ -1131,6 +1523,8 @@ def handle(name, cfg, cloud, log, _args):
 
     # process networking configuration data
     if netcfg and network_configured is False and network_config_vyos != 'disabled':
+        if use_interface_map:
+            netcfg = map_interface_names(netcfg)
         # check which one version of config we have
         # version 1
         if netcfg['version'] == 1:
@@ -1158,10 +1552,6 @@ def handle(name, cfg, cloud, log, _args):
     else:
         set_config_hostname(config, 'vyos', None)
 
-    # save a new configuration file
-    try:
-        with open(cfg_file_name, 'w') as f:
-            f.write(config.to_string())
-            logger.debug("Configuration file saved: {}".format(cfg_file_name))
-    except Exception as e:
-        logger.error("Failed to write configs into file {}: {}".format(cfg_file_name, e))
+    # save a new configuration file, then the interface map it relies on;
+    # nothing follows in this module, so a failed write needs no early return
+    write_config(config, cfg_file_name)
