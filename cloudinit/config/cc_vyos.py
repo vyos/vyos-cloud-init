@@ -36,6 +36,9 @@ from cloudinit.util import load_file, load_json, get_hostname_fqdn, get_cfg_by_p
 from cloudinit.sources.DataSourceOVF import get_properties as ovf_get_properties
 try:
     from vyos.configtree import ConfigTree
+    from vyos.ifconfig.ifname_store import discover_devices
+    from vyos.ifconfig.ifname_store import load_store
+    from vyos.ifconfig.ifname_store import save_store
 except ImportError as err:
     print(f'The module cannot be imported: {err}')
 
@@ -465,12 +468,6 @@ def set_config_interfaces_v1(config, iface_config: dict):
     # configure physical interfaces
     if iface_config['type'] == 'physical':
         iface_name = iface_config['name']
-
-        # configre MAC
-        if 'mac_address' in iface_config:
-            logger.debug("Setting MAC for {}: {}".format(iface_name, iface_config['mac_address']))
-            config.set(['interfaces', 'ethernet', iface_name, 'hw-id'], value=iface_config['mac_address'], replace=True)
-            config.set_tag(['interfaces', 'ethernet'])
 
         # configre MTU
         if 'mtu' in iface_config and iface_config['mtu'] is not None:
@@ -955,15 +952,6 @@ def config_net_v2_ethernet(config, iface_name: str,
                            iface_config: dict) -> None:
     config_net_v2_common(config, 'ethernet', iface_name, iface_config)
 
-    # configure MAC
-    if 'match' in iface_config and 'macaddress' in iface_config['match']:
-        logger.debug("Setting MAC for {}: {}".format(
-            iface_name, iface_config['match']['macaddress']))
-        config.set(['interfaces', 'ethernet', iface_name, 'hw-id'],
-                   value=iface_config['match']['macaddress'],
-                   replace=True)
-        config.set_tag(['interfaces', 'ethernet'])
-
 
 # configure interface from networking config version 2
 def set_config_interfaces_v2(config, netcfg: dict) -> None:
@@ -977,6 +965,64 @@ def set_config_interfaces_v2(config, netcfg: dict) -> None:
         config_net_v2_bridge(config, iface_name, iface_config)
     for iface_name, iface_config in netcfg.get('vlans', {}).items():
         config_net_v2_vlan(config, iface_name, iface_config)
+
+
+# record the names the cloud gave its NICs
+def record_interface_mapping(netcfg: dict) -> None:
+    """T3871: a name is anchored to the slot a card sits in, recorded in the
+    mapping store rather than in the configuration. Which NIC is the first one
+    is the cloud's to decide and is not visible in the hardware, so the order
+    the datasource gives has to reach the store before the naming pass reads
+    it.
+    """
+    bindings = {}
+    if netcfg.get('version') == 1:
+        for iface_config in netcfg.get('config', []):
+            if iface_config.get('type') != 'physical':
+                continue
+            if iface_config.get('name') and iface_config.get('mac_address'):
+                bindings[iface_config['name']] = \
+                    iface_config['mac_address'].lower()
+    elif netcfg.get('version') == 2:
+        for iface_name, iface_config in netcfg.get('ethernets', {}).items():
+            mac = iface_config.get('match', {}).get('macaddress')
+            if mac:
+                bindings[iface_name] = mac.lower()
+
+    if not bindings:
+        return
+
+    try:
+        devices = {device['mac'].lower(): device
+                   for device in discover_devices()}
+        store = load_store()
+    except Exception as err:
+        logger.error("Failed to read the interface mapping: {}".format(err))
+        return
+
+    entries = store['interfaces']
+    taken = set(entries.values())
+    added = False
+
+    for iface_name, mac in bindings.items():
+        device = devices.get(mac)
+        # a NIC the datasource describes but which is not here has nothing to
+        # anchor a name to
+        if device is None or not device['key']:
+            logger.debug("No hardware for {} ({})".format(iface_name, mac))
+            continue
+        # an entry already in the store is authoritative, and a slot already
+        # spoken for must not gain a second name
+        if iface_name in entries or device['key'] in taken:
+            continue
+        entries[iface_name] = device['key']
+        store['hardware'][iface_name] = mac
+        taken.add(device['key'])
+        added = True
+        logger.debug("Mapping {} to {}".format(iface_name, device['key']))
+
+    if added and not save_store(store):
+        logger.error("Failed to save the interface mapping")
 
 
 # configure SSH server service
@@ -1131,6 +1177,8 @@ def handle(name, cfg, cloud, log, _args):
 
     # process networking configuration data
     if netcfg and network_configured is False and network_config_vyos != 'disabled':
+        record_interface_mapping(netcfg)
+
         # check which one version of config we have
         # version 1
         if netcfg['version'] == 1:
