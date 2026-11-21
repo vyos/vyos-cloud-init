@@ -953,17 +953,35 @@ def config_net_v2_ethernet(config, iface_name: str,
     config_net_v2_common(config, 'ethernet', iface_name, iface_config)
 
 
+# a netplan ID is only a label once the entry matches on hardware - the
+# interface is called whatever set-name says
+def _v2_ethernet_names(netcfg: dict) -> dict:
+    return {iface_id: iface_config.get('set-name') or iface_id
+            for iface_id, iface_config in netcfg.get('ethernets', {}).items()}
+
+
 # configure interface from networking config version 2
 def set_config_interfaces_v2(config, netcfg: dict) -> None:
     logger.debug(
         "Configuring network using Cloud-init networking config version 2")
-    for iface_name, iface_config in netcfg.get('ethernets', {}).items():
-        config_net_v2_ethernet(config, iface_name, iface_config)
+    names = _v2_ethernet_names(netcfg)
+    for iface_id, iface_config in netcfg.get('ethernets', {}).items():
+        config_net_v2_ethernet(config, names[iface_id], iface_config)
+    # members and VLAN parents are referred to by ID, not by name
     for iface_name, iface_config in netcfg.get('bonds', {}).items():
+        iface_config = dict(iface_config, interfaces=[
+            names.get(member, member)
+            for member in iface_config.get('interfaces', [])])
         config_net_v2_bond(config, iface_name, iface_config)
     for iface_name, iface_config in netcfg.get('bridges', {}).items():
+        iface_config = dict(iface_config, interfaces=[
+            names.get(member, member)
+            for member in iface_config.get('interfaces', [])])
         config_net_v2_bridge(config, iface_name, iface_config)
     for iface_name, iface_config in netcfg.get('vlans', {}).items():
+        if 'link' in iface_config:
+            link = iface_config['link']
+            iface_config = dict(iface_config, link=names.get(link, link))
         config_net_v2_vlan(config, iface_name, iface_config)
 
 
@@ -984,10 +1002,11 @@ def record_interface_mapping(netcfg: dict) -> None:
                 bindings[iface_config['name']] = \
                     iface_config['mac_address'].lower()
     elif netcfg.get('version') == 2:
-        for iface_name, iface_config in netcfg.get('ethernets', {}).items():
+        names = _v2_ethernet_names(netcfg)
+        for iface_id, iface_config in netcfg.get('ethernets', {}).items():
             mac = iface_config.get('match', {}).get('macaddress')
             if mac:
-                bindings[iface_name] = mac.lower()
+                bindings[names[iface_id]] = mac.lower()
 
     if not bindings:
         return
